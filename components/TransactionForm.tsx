@@ -4,6 +4,8 @@ import CurrencyInput from 'react-currency-input-field';
 import { parseTransactionAI } from '../services/geminiService';
 import { normalizeImeNumericRaw } from '../utils/numberInput';
 import { SUPPORTED_CURRENCIES } from '../types';
+import { loadLearnedPrefsStorage, saveLearnedPrefsStorage } from '../services/appStorage';
+import type { LearnedPrefsMap, LearnedTransactionPref } from '../services/appStorage';
 import type { Account, Category, SavingBucket, Transaction, TransactionType } from '../types';
 
 interface TransactionFormProps {
@@ -19,17 +21,7 @@ const clampDateToToday = (dateValue: string) => {
   if (!dateValue) return getToday();
   return dateValue > getToday() ? getToday() : dateValue;
 };
-const LEARNED_PREFS_KEY = 'ss_learned_transaction_prefs_v1';
-
-type LearnedPref = {
-  type: TransactionType;
-  accountId?: string;
-  toAccountId?: string;
-  category?: string;
-  updatedAt: number;
-  useCount?: number;
-};
-
+type LearnedPref = LearnedTransactionPref;
 const normalizeDesc = (text: string) =>
   text
     .toLowerCase()
@@ -39,14 +31,6 @@ const normalizeDesc = (text: string) =>
 
 const makePrefKey = (type: TransactionType, description: string) => `${type}::${normalizeDesc(description)}`;
 
-
-const loadLearnedPrefs = (): Record<string, LearnedPref> => {
-  try {
-    return JSON.parse(localStorage.getItem(LEARNED_PREFS_KEY) || '{}');
-  } catch {
-    return {};
-  }
-};
 
 const scoreDescriptionSimilarity = (a: string, b: string) => {
   if (!a || !b) return 0;
@@ -63,8 +47,7 @@ const scoreDescriptionSimilarity = (a: string, b: string) => {
   return Math.min(1, jaccard + containsBonus);
 };
 
-const findLearnedPref = (type: TransactionType, description: string): LearnedPref | undefined => {
-  const prefs = loadLearnedPrefs();
+const findLearnedPref = (prefs: LearnedPrefsMap, type: TransactionType, description: string): LearnedPref | undefined => {
   const normalized = normalizeDesc(description);
   const exact = prefs[makePrefKey(type, description)];
   if (exact) return exact;
@@ -172,14 +155,15 @@ const sanitizeDescription = (text: string, accounts: Account[]) => {
   return result.replace(/\s+/g, ' ').trim();
 };
 
-const saveLearnedPref = (key: string, pref: LearnedPref) => {
-  const current = loadLearnedPrefs();
-  const prev = current[key];
-  current[key] = {
-    ...pref,
-    useCount: (prev?.useCount ?? 0) + 1,
+const upsertLearnedPref = (prefs: LearnedPrefsMap, key: string, pref: LearnedPref): LearnedPrefsMap => {
+  const prev = prefs[key];
+  return {
+    ...prefs,
+    [key]: {
+      ...pref,
+      useCount: (prev?.useCount ?? 0) + 1,
+    },
   };
-  localStorage.setItem(LEARNED_PREFS_KEY, JSON.stringify(current));
 };
 
 const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, accounts, savingBuckets, bucketSpendableByAccount }) => {
@@ -198,6 +182,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   const [userAdjustedToAccount, setUserAdjustedToAccount] = useState(false);
   const [sourceAccountMenuOpen, setSourceAccountMenuOpen] = useState(false);
   const [targetAccountMenuOpen, setTargetAccountMenuOpen] = useState(false);
+  const [learnedPrefs, setLearnedPrefs] = useState<LearnedPrefsMap>({});
 
   const toneByType: Record<TransactionType, string> = {
     expense: '#D66D5B',
@@ -265,6 +250,13 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     },
     [accounts]
   );
+  const persistLearnedPref = React.useCallback((key: string, pref: LearnedPref) => {
+    setLearnedPrefs((prev) => {
+      const next = upsertLearnedPref(prev, key, pref);
+      void saveLearnedPrefsStorage(next);
+      return next;
+    });
+  }, []);
 
   const resolveAccountsFromText = React.useCallback(
     (text: string) => {
@@ -352,12 +344,28 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       setSpendBucketId('');
     }
   }, [type, spendBucketId, expenseBuckets]);
+  React.useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const loaded = await loadLearnedPrefsStorage();
+        if (!cancelled) setLearnedPrefs(loaded);
+      } catch (err) {
+        console.error('Failed to load learned prefs from local database.', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   React.useEffect(() => {
     const desc = description.trim();
     if (desc.length < 2 || accounts.length === 0) return;
 
-    const learned = findLearnedPref(type, desc);
+    const learned = findLearnedPref(learnedPrefs, type, desc);
 
     if (learned) {
       if (!userAdjustedCategory && learned.category) {
@@ -400,6 +408,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     userAdjustedCategory,
     userAdjustedAccount,
     userAdjustedToAccount,
+    learnedPrefs,
   ]);
 
   const addTransaction = (
@@ -448,7 +457,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     addTransaction(type, parsedAmount, finalDescription, finalCategory, accountId, new Date(safeDate).toISOString(), toAccountId, spendBucketId || undefined);
 
     if (description.trim()) {
-      saveLearnedPref(makePrefKey(type, description), {
+      persistLearnedPref(makePrefKey(type, description), {
         type,
         accountId,
         toAccountId: type === 'transfer' ? toAccountId : undefined,
@@ -533,7 +542,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
           undefined
         );
 
-        saveLearnedPref(makePrefKey(nextType, txDescription), {
+        persistLearnedPref(makePrefKey(nextType, txDescription), {
           type: nextType,
           accountId: finalSourceAccount.id,
           toAccountId: nextType === 'transfer' ? finalTargetAccount?.id : undefined,
@@ -915,6 +924,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
 };
 
 export default TransactionForm;
+
+
 
 
 

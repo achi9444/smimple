@@ -13,24 +13,26 @@ import SavingAssistant from '../components/SavingAssistant';
 import { canUse, getBucketLimit } from '../services/featureGate';
 import { buildAutoAllocations, getAvailableByAccount, getBucketAccountSpendable, getBucketTotals, getReservedByAccount } from '../services/savingAllocator';
 import { Transaction, Account, Category, DisplayRange, PlanTier, SavingBucket, BucketAllocation, BucketSpend, IncomeAllocationRule, DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS, SUPPORTED_CURRENCIES } from '../types';
+import { AppStorageData, clearAppStorage, loadAppStorage, saveAppStorage } from '../services/appStorage';
 
 const App: React.FC = () => {
   // --- Single Source of Truth for All Data ---
-  const [transactions, setTransactions] = useState<Transaction[]>(() => JSON.parse(localStorage.getItem('ss_transactions') || '[]'));
-  const [accounts, setAccounts] = useState<Account[]>(() => JSON.parse(localStorage.getItem('ss_accounts') || JSON.stringify(DEFAULT_ACCOUNTS)));
-  const [categories, setCategories] = useState<Category[]>(() => JSON.parse(localStorage.getItem('ss_categories') || JSON.stringify(DEFAULT_CATEGORIES)));
-  const [budgets, setBudgets] = useState<Record<string, number>>(() => JSON.parse(localStorage.getItem('ss_budgets') || '{"TWD": 15000}'));
-  const [planTier, setPlanTier] = useState<PlanTier>(() => (localStorage.getItem('ss_plan_tier') as PlanTier) || 'mvp');
-  const [savingBuckets, setSavingBuckets] = useState<SavingBucket[]>(() => JSON.parse(localStorage.getItem('ss_saving_buckets') || '[]'));
-  const [bucketAllocations, setBucketAllocations] = useState<BucketAllocation[]>(() => JSON.parse(localStorage.getItem('ss_bucket_allocations') || '[]'));
-  const [bucketSpends, setBucketSpends] = useState<BucketSpend[]>(() => JSON.parse(localStorage.getItem('ss_bucket_spends') || '[]'));
-  const [incomeRules, setIncomeRules] = useState<IncomeAllocationRule[]>(() => JSON.parse(localStorage.getItem('ss_income_rules') || '[]'));
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>(DEFAULT_ACCOUNTS);
+  const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
+  const [budgets, setBudgets] = useState<Record<string, number>>({ TWD: 15000 });
+  const [planTier, setPlanTier] = useState<PlanTier>('mvp');
+  const [savingBuckets, setSavingBuckets] = useState<SavingBucket[]>([]);
+  const [bucketAllocations, setBucketAllocations] = useState<BucketAllocation[]>([]);
+  const [bucketSpends, setBucketSpends] = useState<BucketSpend[]>([]);
+  const [incomeRules, setIncomeRules] = useState<IncomeAllocationRule[]>([]);
   
   // Date Filter State
-  const [displayRange, setDisplayRange] = useState<DisplayRange>(() => (localStorage.getItem('ss_display_range') as DisplayRange) || 'month');
+  const [displayRange, setDisplayRange] = useState<DisplayRange>('month');
   
   // UI State for deletions in App.tsx
   const [budgetDeleteConfirm, setBudgetDeleteConfirm] = useState<string | null>(null);
+  const [storageReady, setStorageReady] = useState(false);
 
   // Helper to get local date string YYYY-MM-DD
   const getLocalDateString = (date: Date) => {
@@ -71,19 +73,65 @@ const App: React.FC = () => {
     [savingBuckets, accounts, bucketAllocations, bucketSpends]
   );
 
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const defaults: AppStorageData = {
+        transactions: [],
+        accounts: DEFAULT_ACCOUNTS,
+        categories: DEFAULT_CATEGORIES,
+        budgets: { TWD: 15000 },
+        displayRange: 'month',
+        planTier: 'mvp',
+        savingBuckets: [],
+        bucketAllocations: [],
+        bucketSpends: [],
+        incomeRules: [],
+      };
+
+      try {
+        const loaded = await loadAppStorage(defaults);
+        if (cancelled) return;
+        setTransactions(loaded.transactions);
+        setAccounts(loaded.accounts);
+        setCategories(loaded.categories);
+        setBudgets(loaded.budgets);
+        setDisplayRange(loaded.displayRange);
+        setPlanTier(loaded.planTier);
+        setSavingBuckets(loaded.savingBuckets);
+        setBucketAllocations(loaded.bucketAllocations);
+        setBucketSpends(loaded.bucketSpends);
+        setIncomeRules(loaded.incomeRules);
+      } catch (err) {
+        console.error('Failed to load local database, fallback to defaults.', err);
+      } finally {
+        if (!cancelled) setStorageReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Persist Data
   useEffect(() => {
-    localStorage.setItem('ss_transactions', JSON.stringify(transactions));
-    localStorage.setItem('ss_accounts', JSON.stringify(accounts));
-    localStorage.setItem('ss_categories', JSON.stringify(categories));
-    localStorage.setItem('ss_budgets', JSON.stringify(budgets));
-    localStorage.setItem('ss_display_range', displayRange);
-    localStorage.setItem('ss_plan_tier', planTier);
-    localStorage.setItem('ss_saving_buckets', JSON.stringify(savingBuckets));
-    localStorage.setItem('ss_bucket_allocations', JSON.stringify(bucketAllocations));
-    localStorage.setItem('ss_bucket_spends', JSON.stringify(bucketSpends));
-    localStorage.setItem('ss_income_rules', JSON.stringify(incomeRules));
-  }, [transactions, accounts, categories, budgets, displayRange, planTier, savingBuckets, bucketAllocations, bucketSpends, incomeRules]);
+    if (!storageReady) return;
+
+    void saveAppStorage({
+      transactions,
+      accounts,
+      categories,
+      budgets,
+      displayRange,
+      planTier,
+      savingBuckets,
+      bucketAllocations,
+      bucketSpends,
+      incomeRules,
+    });
+  }, [storageReady, transactions, accounts, categories, budgets, displayRange, planTier, savingBuckets, bucketAllocations, bucketSpends, incomeRules]);
 
   const addManualBucketAllocation = (bucketId: string, accountId: string, amount: number) => {
     if (!savingBuckets.some((b) => b.id === bucketId) || !accounts.some((a) => a.id === accountId)) return;
@@ -183,7 +231,7 @@ const App: React.FC = () => {
 
   const handleDeleteTransaction = (tx: Transaction) => {
     if (!tx || typeof tx !== 'object' || !tx.id) {
-      console.error("Invalid transaction object passed to delete handler", tx);
+      console.error('Invalid transaction object passed to delete handler', tx);
       return;
     }
     
@@ -433,12 +481,12 @@ const App: React.FC = () => {
           if (data.bucketAllocations) setBucketAllocations(data.bucketAllocations);
           if (data.bucketSpends) setBucketSpends(data.bucketSpends);
           if (data.incomeRules) setIncomeRules(data.incomeRules);
-          console.log('匯入成功');
+          console.log('Import success');
         } else {
-          console.error('匯入資料格式錯誤');
+          console.error('Import data format error');
         }
       } catch (err) {
-        console.error('匯入失敗，請確認 JSON 檔案。');
+        console.error('Import failed, please verify JSON file.');
       }
     };
     reader.readAsText(file);
@@ -712,7 +760,7 @@ const App: React.FC = () => {
                   </label>
                </div>
                <div className="mt-6 pt-6 border-t border-[#E6DED6]">
-                 <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="text-[#D66D5B] text-xs font-bold flex items-center gap-2 hover:opacity-70">
+                 <button onClick={async () => { await clearAppStorage(); window.location.reload(); }} className="text-[#D66D5B] text-xs font-bold flex items-center gap-2 hover:opacity-70">
                     <RefreshCw size={14} /> 清除本機資料                 </button>
                </div>
              </div>
@@ -742,6 +790,9 @@ const App: React.FC = () => {
 };
 
 export default App;
+
+
+
 
 
 
