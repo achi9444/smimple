@@ -1,0 +1,1 @@
+*{box-sizing:border-box}html,body,#root{width:100%;min-height:100%}body{margin:0;min-width:320px}:root{--safe-top: env(safe-area-inset-top, 0px);--safe-bottom: env(safe-area-inset-bottom, 0px)}.pt-safe{padding-top:max(10px,var(--safe-top))}.pb-safe{padding-bottom:max(12px,var(--safe-bottom))}.pb-safe-nav{padding-bottom:calc(6rem + var(--safe-bottom))}
