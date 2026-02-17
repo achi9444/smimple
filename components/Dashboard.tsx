@@ -1,6 +1,6 @@
 ﻿import React, { useMemo, useState } from 'react';
 import { ChevronDown, Calendar } from 'lucide-react';
-import type { Account, Category, DisplayRange, SavingBucket, Transaction } from '../types';
+import type { Account, Category, DisplayRange, Transaction } from '../types';
 import { SUPPORTED_CURRENCIES } from '../types';
 import { getFinancialAdvice } from '../services/geminiService';
 
@@ -9,10 +9,6 @@ interface DashboardProps {
   accounts: Account[];
   budgets: Record<string, number>;
   categories: Category[];
-  savingBuckets: SavingBucket[];
-  bucketTotals: Record<string, number>;
-  reservedByAccount: Record<string, number>;
-  availableByAccount: Record<string, number>;
   displayRange: DisplayRange;
   setDisplayRange: (range: DisplayRange) => void;
   customStart: string;
@@ -25,10 +21,6 @@ const Dashboard: React.FC<DashboardProps> = ({
   transactions,
   accounts,
   budgets,
-  savingBuckets,
-  bucketTotals,
-  reservedByAccount,
-  availableByAccount,
   displayRange,
   setDisplayRange,
   customStart,
@@ -74,15 +66,6 @@ const Dashboard: React.FC<DashboardProps> = ({
       return { code, limit, expense, progress, isOver: expense > limit, symbol: currency?.symbol || '$' };
     });
   }, [budgets, expensesByCurrency]);
-
-  const savingSummary = useMemo(() => {
-    const totalTarget = savingBuckets.reduce((sum, bucket) => sum + bucket.targetAmount, 0);
-    const totalSaved = savingBuckets.reduce((sum, bucket) => sum + (bucketTotals[bucket.id] || 0), 0);
-    const progress = totalTarget > 0 ? Math.min((totalSaved / totalTarget) * 100, 100) : 0;
-    const totalReserved = accounts.reduce((sum, account) => sum + (reservedByAccount[account.id] || 0), 0);
-    const totalAvailable = accounts.reduce((sum, account) => sum + (availableByAccount[account.id] || 0), 0);
-    return { totalTarget, totalSaved, progress, totalReserved, totalAvailable };
-  }, [savingBuckets, bucketTotals, accounts, reservedByAccount, availableByAccount]);
 
   const handleGetAdvice = async () => {
     setIsAnalyzing(true);
@@ -205,38 +188,6 @@ const Dashboard: React.FC<DashboardProps> = ({
               </div>
             </div>
           ))}
-        </div>
-      )}
-
-      {savingBuckets.length > 0 && (
-        <div className="custom-card p-6 rounded-[2rem] overflow-hidden relative">
-          <div className="flex justify-between items-end mb-4">
-            <div>
-              <p className="text-[9px] font-extrabold text-[#5B84B1] uppercase tracking-widest mb-1">存錢助手總覽</p>
-              <h2 className="text-2xl font-black text-[#1A1A1A]">
-                ${savingSummary.totalSaved.toLocaleString()}
-                <span className="text-xs font-bold text-[#B7ADA4]"> / ${savingSummary.totalTarget.toLocaleString()}</span>
-              </h2>
-            </div>
-            <div className="text-[10px] font-black px-3 py-1 rounded-full bg-[#EAF1FA] text-[#5B84B1]">
-              {Math.round(savingSummary.progress)}%
-            </div>
-          </div>
-          <div className="w-full h-2 bg-[#FAF7F2] rounded-full overflow-hidden border border-[#E6DED6] mb-4">
-            <div className="h-full transition-all duration-1000 ease-out rounded-full bg-[#5B84B1]" style={{ width: `${savingSummary.progress}%` }} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-xl border border-[#E6DED6] bg-[#FAF7F2] p-3">
-              <p className="text-[9px] font-black text-[#B7ADA4] uppercase tracking-widest">已鎖定</p>
-              <p className="text-sm font-black text-[#1A1A1A]">${savingSummary.totalReserved.toLocaleString()}</p>
-            </div>
-            <div className="rounded-xl border border-[#E6DED6] bg-[#FAF7F2] p-3">
-              <p className="text-[9px] font-black text-[#B7ADA4] uppercase tracking-widest">可自由運用</p>
-              <p className={`text-sm font-black ${savingSummary.totalAvailable < 0 ? 'text-[#D66D5B]' : 'text-[#729B79]'}`}>
-                ${savingSummary.totalAvailable.toLocaleString()}
-              </p>
-            </div>
-          </div>
         </div>
       )}
 

@@ -41,6 +41,7 @@ export interface Transaction {
   category: string;
   accountId: string;
   toAccountId?: string;
+  bucketId?: string;
   date: string;
 }
 
@@ -74,18 +75,28 @@ export interface BucketAllocation {
 export interface IncomeAllocationRule {
   id: string;
   bucketId: string;
+  sourceAccountId?: string;
   type: 'percent' | 'fixed';
   value: number;
   isActive: boolean;
 }
 
+export interface BucketSpend {
+  id: string;
+  bucketId: string;
+  accountId: string;
+  amount: number;
+  linkedTransactionId: string;
+  createdAt: string;
+}
+
 export const DEFAULT_CATEGORIES: Category[] = [
-  { id: 'cat_salary', name: '薪資收入', icon: 'Banknote', color: '#729B79', type: 'income', isSystem: true },
-  { id: 'cat_bonus', name: '獎金收入', icon: 'Gift', color: '#E07A5F', type: 'income', isSystem: true },
-  { id: 'cat_invest_inc', name: '投資收入', icon: 'TrendingUp', color: '#8FB996', type: 'income', isSystem: true },
+  { id: 'cat_salary', name: '薪資', icon: 'Banknote', color: '#729B79', type: 'income', isSystem: true },
+  { id: 'cat_bonus', name: '獎金', icon: 'Gift', color: '#E07A5F', type: 'income', isSystem: true },
+  { id: 'cat_invest_inc', name: '投資', icon: 'TrendingUp', color: '#8FB996', type: 'income', isSystem: true },
   { id: 'cat_food', name: '餐飲', icon: 'Utensils', color: '#D08C70', type: 'expense', isSystem: true },
   { id: 'cat_trans', name: '交通', icon: 'Car', color: '#5B84B1', type: 'expense', isSystem: true },
-  { id: 'cat_daily', name: '日常', icon: 'ShoppingBag', color: '#B7ADA4', type: 'expense', isSystem: true },
+  { id: 'cat_daily', name: '日常', icon: 'ShoppingBag', color: '#cacaa6', type: 'expense', isSystem: true },
   { id: 'cat_house', name: '居家', icon: 'Home', color: '#8FB996', type: 'expense', isSystem: true },
   { id: 'cat_play', name: '娛樂', icon: 'Gamepad2', color: '#C97B63', type: 'expense', isSystem: true },
   { id: 'cat_health', name: '醫療', icon: 'Activity', color: '#E07A5F', type: 'expense', isSystem: true },

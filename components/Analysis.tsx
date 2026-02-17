@@ -168,14 +168,14 @@ const Analysis: React.FC<AnalysisProps> = ({ transactions, categories }) => {
       </div>
 
       <div className="custom-card p-6 md:p-8 rounded-[2.5rem]">
-        <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-6">
+        <div className="mb-8 flex flex-col items-center gap-5">
           <div className="flex bg-[#FAF7F2] p-1.5 rounded-2xl border border-[#E6DED6]">
-            <button onClick={() => setViewMode('trend')} className={`px-4 py-2 rounded-xl text-[10px] font-black transition-all ${!isEfficiencyView ? 'bg-[#1A1A1A] text-white shadow-md' : 'text-[#B7ADA4] hover:text-[#6B6661]'}`}>趨勢</button>
-            <button onClick={() => setViewMode('efficiency')} className={`px-4 py-2 rounded-xl text-[10px] font-black transition-all ${isEfficiencyView ? 'bg-[#1A1A1A] text-white shadow-md' : 'text-[#B7ADA4] hover:text-[#6B6661]'}`}>效率</button>
+            <button onClick={() => setViewMode('trend')} className={`h-10 w-20 rounded-xl text-[10px] font-black leading-none transition-all flex items-center justify-center ${!isEfficiencyView ? 'bg-[#1A1A1A] text-white shadow-md' : 'text-[#B7ADA4] hover:text-[#6B6661]'}`}>趨勢</button>
+            <button onClick={() => setViewMode('efficiency')} className={`h-10 w-20 rounded-xl text-[10px] font-black leading-none transition-all flex items-center justify-center ${isEfficiencyView ? 'bg-[#1A1A1A] text-white shadow-md' : 'text-[#B7ADA4] hover:text-[#6B6661]'}`}>儲蓄率</button>
           </div>
 
-          <div className="flex flex-col items-end gap-2">
-            <h4 className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest">{isEfficiencyView ? (daysDiff > 28 ? '效率分析（月）' : '效率分析（日）') : '收支趨勢圖'}</h4>
+          <div className="flex flex-col items-center gap-2 text-center">
+            <h4 className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest">{isEfficiencyView ? (daysDiff > 28 ? '儲蓄率分析（月）' : '儲蓄率分析（日）') : '收支趨勢圖'}</h4>
             <div className="flex gap-4">
               {isEfficiencyView ? (
                 <>

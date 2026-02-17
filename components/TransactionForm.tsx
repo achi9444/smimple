@@ -1,15 +1,24 @@
 ﻿import React, { useMemo, useState } from 'react';
 import * as LucideIcons from 'lucide-react';
+import CurrencyInput from 'react-currency-input-field';
 import { parseTransactionAI } from '../services/geminiService';
-import type { Account, Category, Transaction, TransactionType } from '../types';
+import { normalizeImeNumericRaw } from '../utils/numberInput';
+import { SUPPORTED_CURRENCIES } from '../types';
+import type { Account, Category, SavingBucket, Transaction, TransactionType } from '../types';
 
 interface TransactionFormProps {
   onAdd: (tx: Omit<Transaction, 'id'>) => void;
   categories: Category[];
   accounts: Account[];
+  savingBuckets: SavingBucket[];
+  bucketSpendableByAccount: Record<string, number>;
 }
 
 const getToday = () => new Date().toISOString().slice(0, 10);
+const clampDateToToday = (dateValue: string) => {
+  if (!dateValue) return getToday();
+  return dateValue > getToday() ? getToday() : dateValue;
+};
 const LEARNED_PREFS_KEY = 'ss_learned_transaction_prefs_v1';
 
 type LearnedPref = {
@@ -30,16 +39,6 @@ const normalizeDesc = (text: string) =>
 
 const makePrefKey = (type: TransactionType, description: string) => `${type}::${normalizeDesc(description)}`;
 
-const formatAmountDisplay = (raw: string) => {
-  if (!raw) return '';
-  const hasTrailingDot = raw.endsWith('.');
-  const [intPartRaw, decimalPart] = raw.split('.');
-  const intPart = intPartRaw.replace(/^0+(?=\d)/, '') || '0';
-  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  if (hasTrailingDot) return `${withCommas}.`;
-  if (decimalPart !== undefined) return `${withCommas}.${decimalPart}`;
-  return withCommas;
-};
 
 const loadLearnedPrefs = (): Record<string, LearnedPref> => {
   try {
@@ -169,7 +168,7 @@ const sanitizeDescription = (text: string, accounts: Account[]) => {
         result = result.replace(new RegExp(safeAlias, 'gi'), ' ');
       });
   });
-  result = result.replace(/(現金|cash|帳戶|账户|戶頭|银行|銀行|bank|acc|account)/gi, ' ');
+  result = result.replace(/(現金|cash|帳戶|账户|戶頭|户头|銀行|银行|bank|acc|account)/gi, ' ');
   return result.replace(/\s+/g, ' ').trim();
 };
 
@@ -183,7 +182,7 @@ const saveLearnedPref = (key: string, pref: LearnedPref) => {
   localStorage.setItem(LEARNED_PREFS_KEY, JSON.stringify(current));
 };
 
-const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, accounts }) => {
+const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, accounts, savingBuckets, bucketSpendableByAccount }) => {
   const [type, setType] = useState<TransactionType>('expense');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
@@ -193,9 +192,12 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   const [aiInput, setAiInput] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiHint, setAiHint] = useState('');
+  const [spendBucketId, setSpendBucketId] = useState('');
   const [userAdjustedCategory, setUserAdjustedCategory] = useState(false);
   const [userAdjustedAccount, setUserAdjustedAccount] = useState(false);
   const [userAdjustedToAccount, setUserAdjustedToAccount] = useState(false);
+  const [sourceAccountMenuOpen, setSourceAccountMenuOpen] = useState(false);
+  const [targetAccountMenuOpen, setTargetAccountMenuOpen] = useState(false);
 
   const toneByType: Record<TransactionType, string> = {
     expense: '#D66D5B',
@@ -203,12 +205,13 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     transfer: '#5B84B1',
   };
   const activeTone = toneByType[type];
+  const sourceTone = type === 'transfer' ? toneByType.expense : activeTone;
+  const targetTone = type === 'transfer' ? toneByType.income : activeTone;
 
   const filteredCategories = useMemo(
     () => categories.filter((c) => !c.type || c.type === type),
     [categories, type]
   );
-  const displayedAmount = useMemo(() => formatAmountDisplay(amount), [amount]);
 
   const getAllowedCategoryNames = React.useCallback(
     (txType: TransactionType) => categories.filter((c) => !c.type || c.type === txType).map((c) => c.name),
@@ -290,9 +293,40 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   );
 
   const [category, setCategory] = useState('');
-  const currentCategory = filteredCategories.find((c) => c.name === category);
   const fromAccount = accounts.find((a) => a.id === accountId);
   const toAccount = accounts.find((a) => a.id === toAccountId);
+  const selectedSourceAccount = fromAccount || accounts[0];
+  const selectedTargetAccount = toAccount || accounts[0];
+  const parsedAmount = Number(amount) || 0;
+  const getCurrencySymbol = (currencyCode: string) =>
+    SUPPORTED_CURRENCIES.find((c) => c.code === currencyCode)?.symbol || '$';
+  const getProjectedBalance = (account: Account, role: 'source' | 'target') => {
+    const delta =
+      role === 'target'
+        ? parsedAmount
+        : type === 'income'
+          ? parsedAmount
+          : -parsedAmount;
+    return {
+      delta,
+      nextBalance: account.balance + delta,
+      symbol: getCurrencySymbol(account.currencyCode),
+    };
+  };
+  const expenseBuckets = useMemo(() => {
+    if (type !== 'expense') return [];
+    return savingBuckets
+      .map((bucket) => {
+        const key = `${bucket.id}::${accountId}`;
+        const spendable = bucketSpendableByAccount[key] || 0;
+        return { ...bucket, spendable };
+      })
+      .filter((bucket) => bucket.spendable > 0);
+  }, [type, savingBuckets, accountId, bucketSpendableByAccount]);
+  const selectedBucketSpendable = useMemo(() => {
+    if (!spendBucketId) return 0;
+    return bucketSpendableByAccount[`${spendBucketId}::${accountId}`] || 0;
+  }, [spendBucketId, accountId, bucketSpendableByAccount]);
 
   React.useEffect(() => {
     if (!filteredCategories.some((c) => c.name === category)) {
@@ -308,6 +342,16 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       setToAccountId(accounts[1]?.id ?? accounts[0]?.id ?? '');
     }
   }, [accounts, accountId, toAccountId]);
+
+  React.useEffect(() => {
+    if (type !== 'expense') {
+      setSpendBucketId('');
+      return;
+    }
+    if (spendBucketId && !expenseBuckets.some((bucket) => bucket.id === spendBucketId)) {
+      setSpendBucketId('');
+    }
+  }, [type, spendBucketId, expenseBuckets]);
 
   React.useEffect(() => {
     const desc = description.trim();
@@ -365,7 +409,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     txCategory: string,
     fromAccountId: string,
     txDateIso: string,
-    targetAccountId?: string
+    targetAccountId?: string,
+    expenseBucketId?: string
   ) => {
     const sourceAccount = accounts.find((a) => a.id === fromAccountId);
     if (!sourceAccount) return;
@@ -378,6 +423,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       category: txCategory,
       accountId: fromAccountId,
       toAccountId: txType === 'transfer' ? targetAccountId : undefined,
+      bucketId: txType === 'expense' && expenseBucketId ? expenseBucketId : undefined,
       date: txDateIso,
     });
   };
@@ -385,7 +431,13 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const parsedAmount = Number(amount);
+    const safeDate = clampDateToToday(date);
+    if (safeDate !== date) setDate(safeDate);
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || !accountId) {
+      return;
+    }
+    if (type === 'expense' && spendBucketId && selectedBucketSpendable < parsedAmount) {
+      setAiHint('此目標池可扣用金額不足，請調整金額或改用一般支出。');
       return;
     }
 
@@ -393,7 +445,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     const cleanedDescription = sanitizeDescription(description.trim(), accounts);
     const finalDescription = cleanedDescription || (type === 'transfer' ? '帳戶轉帳' : finalCategory);
 
-    addTransaction(type, parsedAmount, finalDescription, finalCategory, accountId, new Date(date).toISOString(), toAccountId);
+    addTransaction(type, parsedAmount, finalDescription, finalCategory, accountId, new Date(safeDate).toISOString(), toAccountId, spendBucketId || undefined);
 
     if (description.trim()) {
       saveLearnedPref(makePrefKey(type, description), {
@@ -410,6 +462,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     setUserAdjustedCategory(false);
     setUserAdjustedAccount(false);
     setUserAdjustedToAccount(false);
+    setSpendBucketId('');
   };
 
   const handleAiParse = async () => {
@@ -433,7 +486,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       const nextType = result.type || type;
       if (result.type) setType(result.type);
       if (result.description) setDescription(result.description);
-      if (result.date) setDate(result.date);
+      if (result.date) setDate(clampDateToToday(result.date));
       if (nextType !== 'transfer') {
         setCategory(ensureCategoryForType(nextType, result.categoryName || category));
       }
@@ -463,7 +516,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
 
       const parsedAmount = result.amount ?? Number(amount);
       if (Number.isFinite(parsedAmount) && parsedAmount > 0 && finalSourceAccount) {
-        const parsedDate = result.date ? new Date(result.date) : new Date(date);
+        const parsedDate = result.date ? new Date(clampDateToToday(result.date)) : new Date(clampDateToToday(date));
         const txDateIso = Number.isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
         const txCategory = ensureCategoryForType(nextType, result.categoryName || category);
         const rawTxDescription = (result.description || description || txCategory).trim();
@@ -476,7 +529,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
           txCategory,
           finalSourceAccount.id,
           txDateIso,
-          finalTargetAccount?.id
+          finalTargetAccount?.id,
+          undefined
         );
 
         saveLearnedPref(makePrefKey(nextType, txDescription), {
@@ -505,7 +559,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mb-6 rounded-3xl border border-[#E6DED6] bg-white p-4 space-y-3">
+    <form onSubmit={handleSubmit} className="relative z-40 mb-6 rounded-3xl border border-[#E6DED6] bg-white p-4 space-y-3">
       <div className="rounded-2xl bg-[#1A1A1A] p-3 text-white space-y-2">
         <label className="block text-[10px] font-black uppercase tracking-widest text-[#D08C70]">AI 記帳輸入</label>
         <div className="flex gap-2">
@@ -549,21 +603,16 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
-        <input
-          type="text"
-          inputMode="decimal"
-          value={displayedAmount}
-          onChange={(e) => {
-            const next = e.target.value.replace(/,/g, '').trim();
-            if (!next) {
-              setAmount('');
-              return;
-            }
-            if (!/^\d*\.?\d*$/.test(next)) return;
-            setAmount(next.startsWith('.') ? `0${next}` : next);
-          }}
+        <CurrencyInput
+          inputMode="numeric"
+          value={amount}
+          groupSeparator=","
+          allowNegativeValue={false}
+          decimalsLimit={0}
+          transformRawValue={normalizeImeNumericRaw}
+          onValueChange={(value) => setAmount(value || '')}
           placeholder="金額"
-          className="h-11 rounded-xl border border-[#E6DED6] px-3 focus:outline-none focus:ring-2"
+          className="h-11 w-full rounded-xl border border-[#E6DED6] px-3 focus:outline-none focus:ring-2"
           style={{ borderColor: `${activeTone}40` }}
           required
         />
@@ -571,8 +620,9 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
         <input
           type="date"
           value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="h-11 rounded-xl border border-[#E6DED6] px-3 focus:outline-none focus:ring-2"
+          max={getToday()}
+          onChange={(e) => setDate(clampDateToToday(e.target.value))}
+          className="h-11 w-full rounded-xl border border-[#E6DED6] px-3 focus:outline-none focus:ring-2"
           style={{ borderColor: `${activeTone}40` }}
           required
         />
@@ -593,43 +643,202 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       />
 
       <div className="grid gap-3 md:grid-cols-2">
-        <select
-          value={accountId}
-          onChange={(e) => {
-            setAccountId(e.target.value);
-            setUserAdjustedAccount(true);
-          }}
-          className="h-11 rounded-xl border border-[#E6DED6] px-3 focus:outline-none focus:ring-2"
-          style={{ borderColor: `${activeTone}40` }}
-        >
-          {accounts.map((acc) => (
-            <option key={acc.id} value={acc.id}>
-              {acc.name}
-            </option>
-          ))}
-        </select>
+        <div className="space-y-2">
+          <p className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest">
+            {type === 'transfer' ? '來源帳戶' : '帳戶'}
+          </p>
+          <div className="relative">
+            {selectedSourceAccount && (
+                <button
+                  type="button"
+                  onClick={() => setSourceAccountMenuOpen((prev) => !prev)}
+                  className="w-full rounded-xl border bg-[#FAF7F2] px-3 py-2 text-left shadow-sm"
+                  style={{ borderColor: sourceTone }}
+                >
+                {(() => {
+                  const projection = getProjectedBalance(selectedSourceAccount, 'source');
+                  const isIncrease = projection.delta >= 0;
+                  const TrendIcon = isIncrease ? LucideIcons.TrendingUp : LucideIcons.TrendingDown;
+                  const showDelta = parsedAmount > 0;
+                  return (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black text-[#1A1A1A]">{selectedSourceAccount.name}</span>
+                        <div className="flex items-center gap-2">
+                          <LucideIcons.ChevronDown
+                            size={14}
+                            className={`text-[#6B6661] transition-transform ${sourceAccountMenuOpen ? 'rotate-180' : ''}`}
+                          />
+                        </div>
+                      </div>
+                        <div className="mt-1 flex items-center justify-between">
+                          {showDelta ? (
+                          <div className="flex items-center gap-1.5" style={{ color: sourceTone }}>
+                              <TrendIcon size={15} />
+                              <span className="text-[11px] font-bold">
+                                {projection.delta >= 0 ? '+' : '-'}
+                              {projection.symbol}
+                              {Math.abs(projection.delta).toLocaleString()}
+                            </span>
+                          </div>
+                        ) : (
+                          <div />
+                        )}
+                        <span className="text-[11px] font-bold text-[#6B6661]">
+                          {projection.symbol}
+                          {projection.nextBalance.toLocaleString()}
+                        </span>
+                      </div>
+                    </>
+                  );
+                })()}
+              </button>
+            )}
+            {sourceAccountMenuOpen && (
+              <div className="absolute z-[70] mt-2 max-h-64 w-full overflow-auto rounded-xl border border-[#E6DED6] bg-white p-2 shadow-xl">
+                <div className="grid grid-cols-1 gap-2">
+                  {accounts.map((acc) => {
+                    const active = accountId === acc.id;
+                    const projection = getProjectedBalance(acc, 'source');
+                    const isIncrease = projection.delta >= 0;
+                    const DeltaIcon = isIncrease ? LucideIcons.ArrowUpRight : LucideIcons.ArrowDownRight;
+                    return (
+                      <button
+                        key={acc.id}
+                        type="button"
+                        onClick={() => {
+                          setAccountId(acc.id);
+                          setUserAdjustedAccount(true);
+                          setSourceAccountMenuOpen(false);
+                        }}
+                        className={`w-full rounded-xl border px-3 py-2 text-left transition-all ${active ? 'bg-[#FAF7F2] shadow-sm' : 'bg-white'}`}
+                        style={{ borderColor: active ? sourceTone : '#E6DED6' }}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-[#1A1A1A]">{acc.name}</span>
+                          <span className="text-[10px] font-bold text-[#B7ADA4]">
+                            {projection.symbol}
+                            {acc.balance.toLocaleString()}
+                          </span>
+                        </div>
+                        <div className={`mt-1 flex items-center gap-1 text-[10px] font-bold ${isIncrease ? 'text-[#729B79]' : 'text-[#D66D5B]'}`}>
+                          <DeltaIcon size={12} />
+                          <span>
+                            {projection.delta >= 0 ? '+' : ''}
+                            {projection.symbol}
+                            {Math.abs(projection.delta).toLocaleString()} {'->'} {projection.symbol}
+                            {projection.nextBalance.toLocaleString()}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
 
         {type === 'transfer' ? (
-          <select
-            value={toAccountId}
-            onChange={(e) => {
-              setToAccountId(e.target.value);
-              setUserAdjustedToAccount(true);
-            }}
-            className="h-11 rounded-xl border border-[#E6DED6] px-3 focus:outline-none focus:ring-2"
-            style={{ borderColor: `${activeTone}40` }}
-          >
-            {accounts.map((acc) => (
-              <option key={acc.id} value={acc.id}>
-                {acc.name}
-              </option>
-            ))}
-          </select>
+          <div className="space-y-2">
+            <p className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest">目標帳戶</p>
+            <div className="relative">
+              {selectedTargetAccount && (
+                <button
+                  type="button"
+                  onClick={() => setTargetAccountMenuOpen((prev) => !prev)}
+                  className="w-full rounded-xl border bg-[#FAF7F2] px-3 py-2 text-left shadow-sm"
+                  style={{ borderColor: targetTone }}
+                >
+                  {(() => {
+                    const projection = getProjectedBalance(selectedTargetAccount, 'target');
+                    const showDelta = parsedAmount > 0;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-[#1A1A1A]">{selectedTargetAccount.name}</span>
+                          <div className="flex items-center gap-2">
+                            <LucideIcons.ChevronDown
+                              size={14}
+                              className={`text-[#6B6661] transition-transform ${targetAccountMenuOpen ? 'rotate-180' : ''}`}
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between">
+                          {showDelta ? (
+                            <div className="flex items-center gap-1.5" style={{ color: targetTone }}>
+                              <LucideIcons.TrendingUp size={15} />
+                              <span className="text-[11px] font-bold">
+                                +{projection.symbol}
+                                {projection.delta.toLocaleString()}
+                              </span>
+                            </div>
+                          ) : (
+                            <div />
+                          )}
+                          <span className="text-[11px] font-bold text-[#6B6661]">
+                            {projection.symbol}
+                            {projection.nextBalance.toLocaleString()}
+                          </span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </button>
+              )}
+              {targetAccountMenuOpen && (
+                <div className="absolute z-[70] mt-2 max-h-64 w-full overflow-auto rounded-xl border border-[#E6DED6] bg-white p-2 shadow-xl">
+                  <div className="grid grid-cols-1 gap-2">
+                    {accounts.map((acc) => {
+                      const active = toAccountId === acc.id;
+                      const projection = getProjectedBalance(acc, 'target');
+                      const showDelta = parsedAmount > 0;
+                      return (
+                        <button
+                          key={acc.id}
+                          type="button"
+                          onClick={() => {
+                            setToAccountId(acc.id);
+                            setUserAdjustedToAccount(true);
+                            setTargetAccountMenuOpen(false);
+                          }}
+                          className={`w-full rounded-xl border px-3 py-2 text-left transition-all ${active ? 'bg-[#FAF7F2] shadow-sm' : 'bg-white'}`}
+                          style={{ borderColor: active ? targetTone : '#E6DED6' }}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-[#1A1A1A]">{acc.name}</span>
+                            <span className="text-[10px] font-bold text-[#B7ADA4]">
+                              {projection.symbol}
+                              {acc.balance.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between">
+                            {showDelta ? (
+                              <div className="flex items-center gap-1 text-[10px] font-bold" style={{ color: targetTone }}>
+                                <LucideIcons.TrendingUp size={12} />
+                                <span>
+                                  +{projection.symbol}
+                                  {projection.delta.toLocaleString()}
+                                </span>
+                              </div>
+                            ) : (
+                              <div />
+                            )}
+                            <span className="text-[10px] font-bold text-[#6B6661]">
+                              {projection.symbol}
+                              {projection.nextBalance.toLocaleString()}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         ) : (
-          <div className="space-y-2 min-w-0">
-            <button type="button" className="h-11 w-full rounded-xl border px-3 text-left text-sm font-bold bg-white" style={{ borderColor: `${activeTone}40` }}>
-              {currentCategory?.name || '選擇分類'}
-            </button>
+          <div className="min-w-0">
             <div className="flex flex-wrap gap-2 w-full max-w-full">
               {filteredCategories.map((cat) => {
                 const Icon = (LucideIcons as any)[cat.icon] || LucideIcons.Layers;
@@ -654,6 +863,29 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
           </div>
         )}
       </div>
+
+      {type === 'expense' && (
+        <div className="rounded-xl border border-[#E6DED6] bg-[#FAF7F2] p-3 space-y-2">
+          <p className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest">目標池扣款（可選）</p>
+          <select
+            value={spendBucketId}
+            onChange={(e) => setSpendBucketId(e.target.value)}
+            className="h-10 w-full rounded-xl border border-[#E6DED6] bg-white px-3 text-xs font-bold outline-none"
+          >
+            <option value="">一般支出（不扣目標池）</option>
+            {expenseBuckets.map((bucket) => (
+              <option key={bucket.id} value={bucket.id}>
+                {bucket.name} · 可扣 ${bucket.spendable.toLocaleString()}
+              </option>
+            ))}
+          </select>
+          {spendBucketId && (
+            <p className="text-[10px] font-bold text-[#5B84B1]">
+              目前可扣：${selectedBucketSpendable.toLocaleString()}
+            </p>
+          )}
+        </div>
+      )}
 
       <button type="submit" className="h-11 w-full rounded-xl text-white transition-colors flex items-center justify-center gap-1.5" style={{ backgroundColor: activeTone }}>
         {type === 'expense' && (
@@ -683,4 +915,20 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
 };
 
 export default TransactionForm;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

@@ -1,6 +1,6 @@
 ﻿import React, { useState } from 'react';
 import * as LucideIcons from 'lucide-react';
-import type { Account, Category, Transaction } from '../types';
+import type { Account, Category, SavingBucket, Transaction } from '../types';
 import { SUPPORTED_CURRENCIES } from '../types';
 
 interface TransactionListProps {
@@ -9,9 +9,10 @@ interface TransactionListProps {
   onUpdate: (tx: Transaction) => void;
   categories: Category[];
   accounts: Account[];
+  savingBuckets?: SavingBucket[];
 }
 
-const TransactionList: React.FC<TransactionListProps> = ({ transactions, onDelete, onUpdate, categories, accounts }) => {
+const TransactionList: React.FC<TransactionListProps> = ({ transactions, onDelete, onUpdate, categories, accounts, savingBuckets = [] }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Transaction>>({});
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -56,6 +57,7 @@ const TransactionList: React.FC<TransactionListProps> = ({ transactions, onDelet
             const cat = categories.find((c) => c.name === tx.category) || categories[categories.length - 1];
             const acc = accounts.find((a) => a.id === tx.accountId);
             const toAcc = tx.type === 'transfer' ? accounts.find((a) => a.id === tx.toAccountId) : null;
+            const bucket = tx.bucketId ? savingBuckets.find((b) => b.id === tx.bucketId) : null;
             const cur = SUPPORTED_CURRENCIES.find((c) => c.code === tx.currencyCode) || SUPPORTED_CURRENCIES[0];
             const isConfirming = deleteConfirmId === tx.id;
 
@@ -152,6 +154,7 @@ const TransactionList: React.FC<TransactionListProps> = ({ transactions, onDelet
                         <div className="flex items-center gap-2 mt-0.5">
                           <p className="text-[9px] font-bold text-[#B7ADA4] uppercase tracking-tighter">{new Date(tx.date).toLocaleDateString()}</p>
                           <span className="text-[9px] font-bold text-[#D08C70] bg-[#D08C70]/10 px-1.5 rounded">{tx.category}</span>
+                          {bucket && <span className="text-[9px] font-bold text-[#5B84B1] bg-[#EAF1FA] px-1.5 rounded">{bucket.name}</span>}
                         </div>
                       </div>
                       <div className="flex flex-col items-end gap-1">

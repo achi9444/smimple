@@ -1,6 +1,8 @@
 ﻿
-import React, { useState, useEffect, useMemo } from 'react';
-import { Home, Wallet, PieChart, Settings, Download, Upload, RefreshCw, Trash2, ChevronDown } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import CurrencyInput from 'react-currency-input-field';
+import { normalizeImeNumericRaw } from '../utils/numberInput';
+import { Home, Wallet, PieChart, Settings, Download, Upload, RefreshCw, Trash2, ChevronDown, PiggyBank } from 'lucide-react';
 import TransactionForm from '../components/TransactionForm';
 import TransactionList from '../components/TransactionList';
 import Dashboard from '../components/Dashboard';
@@ -9,19 +11,8 @@ import AccountManager from '../components/AccountManager';
 import Analysis from '../components/Analysis';
 import SavingAssistant from '../components/SavingAssistant';
 import { canUse, getBucketLimit } from '../services/featureGate';
-import { buildAutoAllocations, getAvailableByAccount, getBucketTotals, getReservedByAccount } from '../services/savingAllocator';
-import { Transaction, Account, Category, DisplayRange, PlanTier, SavingBucket, BucketAllocation, IncomeAllocationRule, DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS, SUPPORTED_CURRENCIES } from '../types';
-
-const formatNumericWithCommas = (raw: string) => {
-  if (!raw) return '';
-  const hasTrailingDot = raw.endsWith('.');
-  const [intPartRaw, decimalPart] = raw.split('.');
-  const intPart = intPartRaw.replace(/^0+(?=\d)/, '') || '0';
-  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  if (hasTrailingDot) return `${withCommas}.`;
-  if (decimalPart !== undefined) return `${withCommas}.${decimalPart}`;
-  return withCommas;
-};
+import { buildAutoAllocations, getAvailableByAccount, getBucketAccountSpendable, getBucketTotals, getReservedByAccount } from '../services/savingAllocator';
+import { Transaction, Account, Category, DisplayRange, PlanTier, SavingBucket, BucketAllocation, BucketSpend, IncomeAllocationRule, DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS, SUPPORTED_CURRENCIES } from '../types';
 
 const App: React.FC = () => {
   // --- Single Source of Truth for All Data ---
@@ -32,6 +23,7 @@ const App: React.FC = () => {
   const [planTier, setPlanTier] = useState<PlanTier>(() => (localStorage.getItem('ss_plan_tier') as PlanTier) || 'mvp');
   const [savingBuckets, setSavingBuckets] = useState<SavingBucket[]>(() => JSON.parse(localStorage.getItem('ss_saving_buckets') || '[]'));
   const [bucketAllocations, setBucketAllocations] = useState<BucketAllocation[]>(() => JSON.parse(localStorage.getItem('ss_bucket_allocations') || '[]'));
+  const [bucketSpends, setBucketSpends] = useState<BucketSpend[]>(() => JSON.parse(localStorage.getItem('ss_bucket_spends') || '[]'));
   const [incomeRules, setIncomeRules] = useState<IncomeAllocationRule[]>(() => JSON.parse(localStorage.getItem('ss_income_rules') || '[]'));
   
   // Date Filter State
@@ -39,10 +31,6 @@ const App: React.FC = () => {
   
   // UI State for deletions in App.tsx
   const [budgetDeleteConfirm, setBudgetDeleteConfirm] = useState<string | null>(null);
-  
-  // New UI state for budget input formatting
-  const [focusedBudgetInput, setFocusedBudgetInput] = useState<string | null>(null);
-  const [tempBudgetValue, setTempBudgetValue] = useState('');
 
   // Helper to get local date string YYYY-MM-DD
   const getLocalDateString = (date: Date) => {
@@ -58,7 +46,7 @@ const App: React.FC = () => {
   });
   const [customEnd, setCustomEnd] = useState(() => getLocalDateString(new Date()));
 
-  const [activeTab, setActiveTab] = useState<'home' | 'accounts' | 'charts' | 'settings'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'accounts' | 'jar' | 'charts' | 'settings'>('home');
   const [searchQuery, setSearchQuery] = useState('');
   
   // Budget UI state
@@ -67,16 +55,20 @@ const App: React.FC = () => {
   const canUseAutoRules = canUse('auto_income_rules', planTier);
 
   const reservedByAccount = useMemo(
-    () => getReservedByAccount(accounts, bucketAllocations),
-    [accounts, bucketAllocations]
+    () => getReservedByAccount(accounts, bucketAllocations, bucketSpends),
+    [accounts, bucketAllocations, bucketSpends]
   );
   const availableByAccount = useMemo(
-    () => getAvailableByAccount(accounts, bucketAllocations),
-    [accounts, bucketAllocations]
+    () => getAvailableByAccount(accounts, bucketAllocations, bucketSpends),
+    [accounts, bucketAllocations, bucketSpends]
   );
   const bucketTotals = useMemo(
-    () => getBucketTotals(savingBuckets, bucketAllocations),
-    [savingBuckets, bucketAllocations]
+    () => getBucketTotals(savingBuckets, bucketAllocations, bucketSpends),
+    [savingBuckets, bucketAllocations, bucketSpends]
+  );
+  const bucketSpendableByAccount = useMemo(
+    () => getBucketAccountSpendable(savingBuckets, accounts, bucketAllocations, bucketSpends),
+    [savingBuckets, accounts, bucketAllocations, bucketSpends]
   );
 
   // Persist Data
@@ -89,8 +81,9 @@ const App: React.FC = () => {
     localStorage.setItem('ss_plan_tier', planTier);
     localStorage.setItem('ss_saving_buckets', JSON.stringify(savingBuckets));
     localStorage.setItem('ss_bucket_allocations', JSON.stringify(bucketAllocations));
+    localStorage.setItem('ss_bucket_spends', JSON.stringify(bucketSpends));
     localStorage.setItem('ss_income_rules', JSON.stringify(incomeRules));
-  }, [transactions, accounts, categories, budgets, displayRange, planTier, savingBuckets, bucketAllocations, incomeRules]);
+  }, [transactions, accounts, categories, budgets, displayRange, planTier, savingBuckets, bucketAllocations, bucketSpends, incomeRules]);
 
   const addManualBucketAllocation = (bucketId: string, accountId: string, amount: number) => {
     if (!savingBuckets.some((b) => b.id === bucketId) || !accounts.some((a) => a.id === accountId)) return;
@@ -114,10 +107,26 @@ const App: React.FC = () => {
   const removeLinkedAutoAllocations = (transactionId: string) => {
     setBucketAllocations((prev) => prev.filter((a) => a.linkedTransactionId !== transactionId));
   };
+  const removeLinkedBucketSpends = (transactionId: string) => {
+    setBucketSpends((prev) => prev.filter((s) => s.linkedTransactionId !== transactionId));
+  };
+
+  const getBucketSpendableAmount = (bucketId: string, accountId: string) => {
+    const key = `${bucketId}::${accountId}`;
+    return bucketSpendableByAccount[key] || 0;
+  };
 
   // --- Core Logic: Add ---
 
   const handleAddTransaction = (newTx: Omit<Transaction, 'id'>) => {
+    if (newTx.type === 'expense' && newTx.bucketId) {
+      const spendable = getBucketSpendableAmount(newTx.bucketId, newTx.accountId);
+      if (spendable < newTx.amount) {
+        console.warn('Bucket has insufficient balance for this expense.');
+        return;
+      }
+    }
+
     const tx: Transaction = { ...newTx, id: Date.now().toString(36) };
     
     // Update accounts with explicit logic ensuring source is deducted
@@ -154,6 +163,19 @@ const App: React.FC = () => {
           setBucketAllocations((prev) => [...prev, ...auto]);
         }
       }
+    }
+    if (tx.type === 'expense' && tx.bucketId) {
+      setBucketSpends((prev) => [
+        ...prev,
+        {
+          id: `bs_${tx.id}`,
+          bucketId: tx.bucketId as string,
+          accountId: tx.accountId,
+          amount: tx.amount,
+          linkedTransactionId: tx.id,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
     }
   };
 
@@ -192,6 +214,7 @@ const App: React.FC = () => {
 
     setTransactions(prev => prev.filter(t => t.id !== tx.id));
     removeLinkedAutoAllocations(tx.id);
+    removeLinkedBucketSpends(tx.id);
   };
 
   const handleDeleteAccount = (id: string) => {
@@ -211,6 +234,7 @@ const App: React.FC = () => {
       return prev.filter(a => a.id !== id);
     });
     setBucketAllocations((prev) => prev.filter((a) => a.accountId !== id));
+    setBucketSpends((prev) => prev.filter((s) => s.accountId !== id));
   };
 
   // NEW: Centralized Category Deletion Logic
@@ -254,10 +278,31 @@ const App: React.FC = () => {
     );
 
     removeLinkedAutoAllocations(updatedTx.id);
+    removeLinkedBucketSpends(updatedTx.id);
     if (updatedTx.type === 'income' && canUseAutoRules) {
       const auto = buildAutoAllocations(updatedTx.id, updatedTx.accountId, updatedTx.amount, incomeRules, savingBuckets);
       if (auto.length > 0) {
         setBucketAllocations((prev) => [...prev, ...auto]);
+      }
+    }
+    if (updatedTx.type === 'expense' && updatedTx.bucketId) {
+      const isSameBucketAccount =
+        oldTx.type === 'expense' &&
+        oldTx.bucketId === updatedTx.bucketId &&
+        oldTx.accountId === updatedTx.accountId;
+      const spendable = getBucketSpendableAmount(updatedTx.bucketId, updatedTx.accountId) + (isSameBucketAccount ? oldTx.amount : 0);
+      if (spendable >= updatedTx.amount) {
+        setBucketSpends((prev) => [
+          ...prev,
+          {
+            id: `bs_${updatedTx.id}`,
+            bucketId: updatedTx.bucketId as string,
+            accountId: updatedTx.accountId,
+            amount: updatedTx.amount,
+            linkedTransactionId: updatedTx.id,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
       }
     }
   };
@@ -278,6 +323,7 @@ const App: React.FC = () => {
   const handleDeleteBucket = (bucketId: string) => {
     setSavingBuckets((prev) => prev.filter((b) => b.id !== bucketId));
     setBucketAllocations((prev) => prev.filter((a) => a.bucketId !== bucketId));
+    setBucketSpends((prev) => prev.filter((s) => s.bucketId !== bucketId));
     setIncomeRules((prev) => prev.filter((r) => r.bucketId !== bucketId));
   };
 
@@ -291,14 +337,18 @@ const App: React.FC = () => {
     setBucketAllocations((prev) => prev.filter((a) => a.id !== allocationId));
   };
 
-  const handleUpsertIncomeRule = (bucketId: string, type: 'percent' | 'fixed', value: number) => {
+  const handleUpsertIncomeRule = (bucketId: string, sourceAccountId: string, type: 'percent' | 'fixed', value: number) => {
     if (!canUseAutoRules) return;
+    if (!accounts.some((acc) => acc.id === sourceAccountId)) return;
+    const normalizedValue = type === 'percent' ? Math.min(100, Math.max(0, value)) : Math.max(0, value);
     setIncomeRules((prev) => {
-      const existing = prev.find((rule) => rule.bucketId === bucketId);
+      const existing = prev.find(
+        (rule) => rule.bucketId === bucketId && rule.sourceAccountId === sourceAccountId && rule.type === type
+      );
       if (existing) {
         return prev.map((rule) =>
           rule.id === existing.id
-            ? { ...rule, type, value: Math.max(0, value), isActive: true }
+            ? { ...rule, sourceAccountId, type, value: normalizedValue, isActive: true }
             : rule
         );
       }
@@ -307,8 +357,9 @@ const App: React.FC = () => {
         {
           id: `rule_${Date.now().toString(36)}`,
           bucketId,
+          sourceAccountId,
           type,
-          value: Math.max(0, value),
+          value: normalizedValue,
           isActive: true,
         },
       ];
@@ -350,6 +401,7 @@ const App: React.FC = () => {
       planTier,
       savingBuckets,
       bucketAllocations,
+      bucketSpends,
       incomeRules,
       version: '1.1',
     };
@@ -379,6 +431,7 @@ const App: React.FC = () => {
           if (data.planTier) setPlanTier(data.planTier);
           if (data.savingBuckets) setSavingBuckets(data.savingBuckets);
           if (data.bucketAllocations) setBucketAllocations(data.bucketAllocations);
+          if (data.bucketSpends) setBucketSpends(data.bucketSpends);
           if (data.incomeRules) setIncomeRules(data.incomeRules);
           console.log('匯入成功');
         } else {
@@ -426,6 +479,7 @@ const App: React.FC = () => {
   const navItems = [
     { id: 'home', icon: Home, label: '首頁' },
     { id: 'accounts', icon: Wallet, label: '帳戶' },
+    { id: 'jar', icon: PiggyBank, label: '錢罐' },
     { id: 'charts', icon: PieChart, label: '分析' },
     { id: 'settings', icon: Settings, label: '設定' }
   ];
@@ -446,17 +500,19 @@ const App: React.FC = () => {
       <main className="max-w-4xl mx-auto px-6 pt-6">
         {activeTab === 'home' && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <TransactionForm onAdd={handleAddTransaction} categories={categories} accounts={accounts} />
+            <TransactionForm
+              onAdd={handleAddTransaction}
+              categories={categories}
+              accounts={accounts}
+              savingBuckets={savingBuckets}
+              bucketSpendableByAccount={bucketSpendableByAccount}
+            />
             
             <Dashboard 
               transactions={filteredTransactions} 
               accounts={accounts} 
               budgets={budgets} 
               categories={categories}
-              savingBuckets={savingBuckets}
-              bucketTotals={bucketTotals}
-              reservedByAccount={reservedByAccount}
-              availableByAccount={availableByAccount}
               displayRange={displayRange}
               setDisplayRange={setDisplayRange}
               customStart={customStart}
@@ -464,25 +520,6 @@ const App: React.FC = () => {
               customEnd={customEnd}
               setCustomEnd={setCustomEnd}
             />
-
-            {canUse('saving_assistant', planTier) && (
-              <SavingAssistant
-                planTier={planTier}
-                bucketLimit={bucketLimit}
-                canUseAutoRules={canUseAutoRules}
-                accounts={accounts}
-                buckets={savingBuckets}
-                allocations={bucketAllocations}
-                incomeRules={incomeRules}
-                onAddBucket={handleAddBucket}
-                onDeleteBucket={handleDeleteBucket}
-                onUpdateBucketTarget={handleUpdateBucketTarget}
-                onAddAllocation={addManualBucketAllocation}
-                onDeleteAllocation={handleDeleteAllocation}
-                onUpsertIncomeRule={handleUpsertIncomeRule}
-                onDeleteIncomeRule={handleDeleteIncomeRule}
-              />
-            )}
 
             <div className="relative mb-4">
               <input type="text" placeholder="搜尋描述或分類..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full px-12 py-4 bg-white border border-[#E6DED6] rounded-2xl focus:ring-2 focus:ring-[#D08C70] outline-none font-bold text-sm" />
@@ -495,6 +532,7 @@ const App: React.FC = () => {
               onUpdate={handleUpdateTransaction} 
               categories={categories} 
               accounts={accounts} 
+              savingBuckets={savingBuckets}
             />
           </div>
         )}
@@ -505,6 +543,24 @@ const App: React.FC = () => {
             availableByAccount={availableByAccount}
             onUpdate={setAccounts} 
             onDelete={handleDeleteAccount} 
+          />
+        )}
+        {activeTab === 'jar' && canUse('saving_assistant', planTier) && (
+          <SavingAssistant
+            planTier={planTier}
+            bucketLimit={bucketLimit}
+            canUseAutoRules={canUseAutoRules}
+            accounts={accounts}
+            buckets={savingBuckets}
+            allocations={bucketAllocations}
+            bucketTotals={bucketTotals}
+            incomeRules={incomeRules}
+            onAddBucket={handleAddBucket}
+            onDeleteBucket={handleDeleteBucket}
+            onUpdateBucketTarget={handleUpdateBucketTarget}
+            onDeleteAllocation={handleDeleteAllocation}
+            onUpsertIncomeRule={handleUpsertIncomeRule}
+            onDeleteIncomeRule={handleDeleteIncomeRule}
           />
         )}
         {activeTab === 'charts' && <Analysis transactions={transactions} categories={categories} />}
@@ -531,7 +587,7 @@ const App: React.FC = () => {
                </div>
                <p className="text-[10px] font-bold text-[#B7ADA4] mt-3">目前為本機開關，正式上架時可改為後端訂閱權限。</p>
              </div>
-             
+
              {/* Redesigned Budget Settings */}
              <div className="custom-card p-6 md:p-8 rounded-[2.5rem] mb-12 space-y-8">
                <div className="flex items-center justify-between">
@@ -551,7 +607,6 @@ const App: React.FC = () => {
                    {Object.entries(budgets).map(([code, amount]) => {
                       const currency = SUPPORTED_CURRENCIES.find(c => c.code === code);
                       const isConfirming = budgetDeleteConfirm === code;
-                      const isFocused = focusedBudgetInput === code;
 
                       return (
                         <div key={code} className="custom-card p-6 rounded-[2.5rem] flex justify-between items-center bg-white group hover:border-[#D08C70]/30 transition-all border border-transparent">
@@ -562,30 +617,16 @@ const App: React.FC = () => {
                                </h4>
                                <div className="flex items-center">
                                  <span className="text-xl font-black text-[#1A1A1A] mr-1 tracking-tighter">{currency?.symbol}</span>
-                                  <input 
-                                     type="text" 
-                                     inputMode="decimal"
-                                     value={isFocused ? tempBudgetValue : amount.toLocaleString()} 
-                                     onFocus={() => {
-                                      setTempBudgetValue(formatNumericWithCommas(amount.toString()));
-                                      setFocusedBudgetInput(code);
-                                     }}
-                                     onBlur={() => {
-                                      setFocusedBudgetInput(null);
-                                      setTempBudgetValue('');
-                                     }}
-                                     onChange={(e) => {
-                                      const next = e.target.value.replace(/,/g, '').trim();
-                                      if (!next) {
-                                        setTempBudgetValue('');
-                                        setBudgets(prev => ({ ...prev, [code]: 0 }));
-                                        return;
-                                      }
-                                      if (!/^\d*\.?\d*$/.test(next)) return;
-                                      const normalized = next.startsWith('.') ? `0${next}` : next;
-                                      setTempBudgetValue(formatNumericWithCommas(normalized));
-                                      const num = parseFloat(normalized);
-                                      setBudgets(prev => ({ ...prev, [code]: isNaN(num) ? 0 : num }));
+                                   <CurrencyInput
+                                      inputMode="numeric"
+                                      value={amount}
+                                      groupSeparator=","
+                                      allowNegativeValue={false}
+                                      decimalsLimit={0}
+                                      transformRawValue={normalizeImeNumericRaw}
+                                      onValueChange={(value) => {
+                                       const num = parseFloat(value || '0');
+                                       setBudgets(prev => ({ ...prev, [code]: Number.isFinite(num) ? num : 0 }));
                                      }}
                                      className="w-full bg-transparent font-black text-xl text-[#1A1A1A] outline-none tracking-tighter placeholder:text-[#E6DED6]"
                                    />
@@ -701,4 +742,13 @@ const App: React.FC = () => {
 };
 
 export default App;
+
+
+
+
+
+
+
+
+
 

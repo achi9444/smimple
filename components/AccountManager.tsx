@@ -1,5 +1,7 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import * as LucideIcons from 'lucide-react';
+import CurrencyInput from 'react-currency-input-field';
+import { normalizeImeNumericRaw } from '../utils/numberInput';
 import type { Account } from '../types';
 import { SUPPORTED_CURRENCIES } from '../types';
 
@@ -199,7 +201,16 @@ const AccountManager: React.FC<AccountManagerProps> = ({ accounts, reservedByAcc
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-[9px] font-black text-[#B7ADA4] uppercase tracking-widest ml-1 mb-1">餘額</label>
-                <input type="number" value={balance} onChange={(e) => setBalance(e.target.value)} className="w-full px-5 py-3 rounded-xl border border-[#E6DED6] outline-none font-black text-[#1A1A1A]" />
+                <CurrencyInput
+                  inputMode="numeric"
+                  value={balance}
+                  groupSeparator=","
+                  allowNegativeValue
+                  decimalsLimit={0}
+                  transformRawValue={normalizeImeNumericRaw}
+                  onValueChange={(value) => setBalance(value || '')}
+                  className="w-full px-5 py-3 rounded-xl border border-[#E6DED6] outline-none font-black text-[#1A1A1A]"
+                />
               </div>
               <div>
                 <label className="block text-[9px] font-black text-[#B7ADA4] uppercase tracking-widest ml-1 mb-1">幣別</label>
@@ -298,3 +309,6 @@ const AccountManager: React.FC<AccountManagerProps> = ({ accounts, reservedByAcc
 };
 
 export default AccountManager;
+
+
+

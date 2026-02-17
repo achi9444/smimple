@@ -1,13 +1,14 @@
-import type { Account, BucketAllocation, IncomeAllocationRule, SavingBucket } from '../types';
+import type { Account, BucketAllocation, BucketSpend, IncomeAllocationRule, SavingBucket } from '../types';
 
 type RuleDraft = {
   bucketId: string;
+  sourceAccountId: string;
   amount: number;
 };
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100;
 
-export const getReservedByAccount = (accounts: Account[], allocations: BucketAllocation[]) => {
+export const getReservedByAccount = (accounts: Account[], allocations: BucketAllocation[], spends: BucketSpend[] = []) => {
   const reserved: Record<string, number> = {};
   accounts.forEach((acc) => {
     reserved[acc.id] = 0;
@@ -15,11 +16,14 @@ export const getReservedByAccount = (accounts: Account[], allocations: BucketAll
   allocations.forEach((allocation) => {
     reserved[allocation.accountId] = roundMoney((reserved[allocation.accountId] || 0) + allocation.amount);
   });
+  spends.forEach((spend) => {
+    reserved[spend.accountId] = roundMoney((reserved[spend.accountId] || 0) - spend.amount);
+  });
   return reserved;
 };
 
-export const getAvailableByAccount = (accounts: Account[], allocations: BucketAllocation[]) => {
-  const reserved = getReservedByAccount(accounts, allocations);
+export const getAvailableByAccount = (accounts: Account[], allocations: BucketAllocation[], spends: BucketSpend[] = []) => {
+  const reserved = getReservedByAccount(accounts, allocations, spends);
   const available: Record<string, number> = {};
   accounts.forEach((acc) => {
     available[acc.id] = roundMoney(acc.balance - (reserved[acc.id] || 0));
@@ -27,7 +31,7 @@ export const getAvailableByAccount = (accounts: Account[], allocations: BucketAl
   return available;
 };
 
-export const getBucketTotals = (buckets: SavingBucket[], allocations: BucketAllocation[]) => {
+export const getBucketTotals = (buckets: SavingBucket[], allocations: BucketAllocation[], spends: BucketSpend[] = []) => {
   const totals: Record<string, number> = {};
   buckets.forEach((bucket) => {
     totals[bucket.id] = 0;
@@ -35,7 +39,33 @@ export const getBucketTotals = (buckets: SavingBucket[], allocations: BucketAllo
   allocations.forEach((allocation) => {
     totals[allocation.bucketId] = roundMoney((totals[allocation.bucketId] || 0) + allocation.amount);
   });
+  spends.forEach((spend) => {
+    totals[spend.bucketId] = roundMoney((totals[spend.bucketId] || 0) - spend.amount);
+  });
   return totals;
+};
+
+export const getBucketAccountSpendable = (
+  buckets: SavingBucket[],
+  accounts: Account[],
+  allocations: BucketAllocation[],
+  spends: BucketSpend[]
+) => {
+  const spendable: Record<string, number> = {};
+  buckets.forEach((bucket) => {
+    accounts.forEach((account) => {
+      spendable[`${bucket.id}::${account.id}`] = 0;
+    });
+  });
+  allocations.forEach((allocation) => {
+    const key = `${allocation.bucketId}::${allocation.accountId}`;
+    spendable[key] = roundMoney((spendable[key] || 0) + allocation.amount);
+  });
+  spends.forEach((spend) => {
+    const key = `${spend.bucketId}::${spend.accountId}`;
+    spendable[key] = roundMoney((spendable[key] || 0) - spend.amount);
+  });
+  return spendable;
 };
 
 export const buildAutoAllocations = (
@@ -46,7 +76,13 @@ export const buildAutoAllocations = (
   buckets: SavingBucket[]
 ): BucketAllocation[] => {
   if (amount <= 0) return [];
-  const activeRules = rules.filter((r) => r.isActive && r.value > 0 && buckets.some((b) => b.id === r.bucketId));
+  const activeRules = rules.filter(
+    (r) =>
+      r.isActive &&
+      r.value > 0 &&
+      buckets.some((b) => b.id === r.bucketId) &&
+      (!r.sourceAccountId || r.sourceAccountId === accountId)
+  );
   if (!activeRules.length) return [];
 
   let remaining = amount;
@@ -58,22 +94,20 @@ export const buildAutoAllocations = (
       if (remaining <= 0) return;
       const allocate = Math.min(remaining, rule.value);
       if (allocate > 0) {
-        draft.push({ bucketId: rule.bucketId, amount: roundMoney(allocate) });
+        draft.push({ bucketId: rule.bucketId, sourceAccountId: rule.sourceAccountId || accountId, amount: roundMoney(allocate) });
         remaining = roundMoney(remaining - allocate);
       }
     });
 
   const percentRules = activeRules.filter((r) => r.type === 'percent');
   if (remaining > 0 && percentRules.length > 0) {
-    const totalPercent = percentRules.reduce((sum, r) => sum + r.value, 0);
-    let distributed = 0;
-    percentRules.forEach((rule, index) => {
-      const ratio = totalPercent > 0 ? rule.value / totalPercent : 0;
-      const raw = index === percentRules.length - 1 ? remaining - distributed : remaining * ratio;
-      const allocate = roundMoney(Math.max(0, raw));
+    percentRules.forEach((rule) => {
+      if (remaining <= 0) return;
+      const raw = amount * (rule.value / 100);
+      const allocate = roundMoney(Math.max(0, Math.min(remaining, raw)));
       if (allocate > 0) {
-        draft.push({ bucketId: rule.bucketId, amount: allocate });
-        distributed = roundMoney(distributed + allocate);
+        draft.push({ bucketId: rule.bucketId, sourceAccountId: rule.sourceAccountId || accountId, amount: allocate });
+        remaining = roundMoney(remaining - allocate);
       }
     });
   }
@@ -83,11 +117,10 @@ export const buildAutoAllocations = (
     .map((item, index) => ({
       id: `ba_${txId}_${index}`,
       bucketId: item.bucketId,
-      accountId,
+      accountId: item.sourceAccountId,
       amount: item.amount,
       source: 'auto',
       linkedTransactionId: txId,
       createdAt: new Date().toISOString(),
     }));
 };
-
