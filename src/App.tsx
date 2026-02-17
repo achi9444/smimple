@@ -533,7 +533,7 @@ const App: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen pb-24 bg-[#FAF7F2]">
+    <div className="min-h-screen pb-24 pt-safe pb-safe-nav bg-[#FAF7F2]">
       <header className="bg-white/80 backdrop-blur-md border-b border-[#E6DED6] sticky top-0 z-50">
         <div className="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -768,7 +768,7 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 z-50 px-4 pb-3">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 px-4 pb-safe">
         <div className="max-w-4xl mx-auto bg-white/90 backdrop-blur-xl border border-[#E6DED6] rounded-2xl px-4 py-3 pb-safe flex justify-around items-center shadow-lg">
           {navItems.map(item => (
             <button
@@ -790,6 +790,7 @@ const App: React.FC = () => {
 };
 
 export default App;
+
 
 
 

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Smimple</string>
+    <string name="title_activity_main">Smimple</string>
+    <string name="package_name">com.achi9444.smimple</string>
+    <string name="custom_url_scheme">com.achi9444.smimple</string>
+</resources>
