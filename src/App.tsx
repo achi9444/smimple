@@ -409,7 +409,7 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `smartspend_backup_${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `smimple_backup_${new Date().toISOString().split('T')[0]}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -492,7 +492,7 @@ const App: React.FC = () => {
             <div className="w-9 h-9 bg-[#D08C70] rounded-xl flex items-center justify-center shadow-lg shadow-[#D08C70]/20">
               <span className="text-white"><Wallet size={18} strokeWidth={2.5} /></span>
             </div>
-            <h1 className="text-lg font-black tracking-tighter">SmartSpend <span className="text-[#D08C70]">AI</span></h1>
+            <h1 className="text-lg font-black tracking-tighter">Smimple</h1>
           </div>
         </div>
       </header>

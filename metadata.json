@@ -1,5 +1,5 @@
-{
-  "name": "SmartSpend AI",
+﻿{
+  "name": "Smimple",
   "description": "An intelligent wealth tracker that manages multiple accounts, income, and expenses with AI-powered categorization and financial insights.",
   "requestFramePermissions": [
     "microphone"
