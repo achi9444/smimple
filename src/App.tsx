@@ -1,0 +1,704 @@
+﻿
+import React, { useState, useEffect, useMemo } from 'react';
+import { Home, Wallet, PieChart, Settings, Download, Upload, RefreshCw, Trash2, ChevronDown } from 'lucide-react';
+import TransactionForm from '../components/TransactionForm';
+import TransactionList from '../components/TransactionList';
+import Dashboard from '../components/Dashboard';
+import CategoryManager from '../components/CategoryManager';
+import AccountManager from '../components/AccountManager';
+import Analysis from '../components/Analysis';
+import SavingAssistant from '../components/SavingAssistant';
+import { canUse, getBucketLimit } from '../services/featureGate';
+import { buildAutoAllocations, getAvailableByAccount, getBucketTotals, getReservedByAccount } from '../services/savingAllocator';
+import { Transaction, Account, Category, DisplayRange, PlanTier, SavingBucket, BucketAllocation, IncomeAllocationRule, DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS, SUPPORTED_CURRENCIES } from '../types';
+
+const formatNumericWithCommas = (raw: string) => {
+  if (!raw) return '';
+  const hasTrailingDot = raw.endsWith('.');
+  const [intPartRaw, decimalPart] = raw.split('.');
+  const intPart = intPartRaw.replace(/^0+(?=\d)/, '') || '0';
+  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (hasTrailingDot) return `${withCommas}.`;
+  if (decimalPart !== undefined) return `${withCommas}.${decimalPart}`;
+  return withCommas;
+};
+
+const App: React.FC = () => {
+  // --- Single Source of Truth for All Data ---
+  const [transactions, setTransactions] = useState<Transaction[]>(() => JSON.parse(localStorage.getItem('ss_transactions') || '[]'));
+  const [accounts, setAccounts] = useState<Account[]>(() => JSON.parse(localStorage.getItem('ss_accounts') || JSON.stringify(DEFAULT_ACCOUNTS)));
+  const [categories, setCategories] = useState<Category[]>(() => JSON.parse(localStorage.getItem('ss_categories') || JSON.stringify(DEFAULT_CATEGORIES)));
+  const [budgets, setBudgets] = useState<Record<string, number>>(() => JSON.parse(localStorage.getItem('ss_budgets') || '{"TWD": 15000}'));
+  const [planTier, setPlanTier] = useState<PlanTier>(() => (localStorage.getItem('ss_plan_tier') as PlanTier) || 'mvp');
+  const [savingBuckets, setSavingBuckets] = useState<SavingBucket[]>(() => JSON.parse(localStorage.getItem('ss_saving_buckets') || '[]'));
+  const [bucketAllocations, setBucketAllocations] = useState<BucketAllocation[]>(() => JSON.parse(localStorage.getItem('ss_bucket_allocations') || '[]'));
+  const [incomeRules, setIncomeRules] = useState<IncomeAllocationRule[]>(() => JSON.parse(localStorage.getItem('ss_income_rules') || '[]'));
+  
+  // Date Filter State
+  const [displayRange, setDisplayRange] = useState<DisplayRange>(() => (localStorage.getItem('ss_display_range') as DisplayRange) || 'month');
+  
+  // UI State for deletions in App.tsx
+  const [budgetDeleteConfirm, setBudgetDeleteConfirm] = useState<string | null>(null);
+  
+  // New UI state for budget input formatting
+  const [focusedBudgetInput, setFocusedBudgetInput] = useState<string | null>(null);
+  const [tempBudgetValue, setTempBudgetValue] = useState('');
+
+  // Helper to get local date string YYYY-MM-DD
+  const getLocalDateString = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const [customStart, setCustomStart] = useState(() => {
+    const now = new Date();
+    return getLocalDateString(new Date(now.getFullYear(), now.getMonth(), 1));
+  });
+  const [customEnd, setCustomEnd] = useState(() => getLocalDateString(new Date()));
+
+  const [activeTab, setActiveTab] = useState<'home' | 'accounts' | 'charts' | 'settings'>('home');
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Budget UI state
+  const [newBudgetCurrency, setNewBudgetCurrency] = useState('USD');
+  const bucketLimit = getBucketLimit(planTier);
+  const canUseAutoRules = canUse('auto_income_rules', planTier);
+
+  const reservedByAccount = useMemo(
+    () => getReservedByAccount(accounts, bucketAllocations),
+    [accounts, bucketAllocations]
+  );
+  const availableByAccount = useMemo(
+    () => getAvailableByAccount(accounts, bucketAllocations),
+    [accounts, bucketAllocations]
+  );
+  const bucketTotals = useMemo(
+    () => getBucketTotals(savingBuckets, bucketAllocations),
+    [savingBuckets, bucketAllocations]
+  );
+
+  // Persist Data
+  useEffect(() => {
+    localStorage.setItem('ss_transactions', JSON.stringify(transactions));
+    localStorage.setItem('ss_accounts', JSON.stringify(accounts));
+    localStorage.setItem('ss_categories', JSON.stringify(categories));
+    localStorage.setItem('ss_budgets', JSON.stringify(budgets));
+    localStorage.setItem('ss_display_range', displayRange);
+    localStorage.setItem('ss_plan_tier', planTier);
+    localStorage.setItem('ss_saving_buckets', JSON.stringify(savingBuckets));
+    localStorage.setItem('ss_bucket_allocations', JSON.stringify(bucketAllocations));
+    localStorage.setItem('ss_income_rules', JSON.stringify(incomeRules));
+  }, [transactions, accounts, categories, budgets, displayRange, planTier, savingBuckets, bucketAllocations, incomeRules]);
+
+  const addManualBucketAllocation = (bucketId: string, accountId: string, amount: number) => {
+    if (!savingBuckets.some((b) => b.id === bucketId) || !accounts.some((a) => a.id === accountId)) return;
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const accountAvailable = availableByAccount[accountId] ?? 0;
+    if (amount > accountAvailable) return;
+
+    setBucketAllocations((prev) => [
+      ...prev,
+      {
+        id: `ba_manual_${Date.now().toString(36)}`,
+        bucketId,
+        accountId,
+        amount,
+        source: 'manual',
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  };
+
+  const removeLinkedAutoAllocations = (transactionId: string) => {
+    setBucketAllocations((prev) => prev.filter((a) => a.linkedTransactionId !== transactionId));
+  };
+
+  // --- Core Logic: Add ---
+
+  const handleAddTransaction = (newTx: Omit<Transaction, 'id'>) => {
+    const tx: Transaction = { ...newTx, id: Date.now().toString(36) };
+    
+    // Update accounts with explicit logic ensuring source is deducted
+    setAccounts(prev => prev.map(acc => {
+      let newBalance = acc.balance;
+
+      // 1. Handle Source Account (Income, Expense, Transfer Out)
+      if (acc.id === tx.accountId) {
+        if (tx.type === 'income') {
+          newBalance += tx.amount;
+        } else {
+          // Both 'expense' and 'transfer' (source) deduct money
+          newBalance -= tx.amount;
+        }
+      }
+
+      // 2. Handle Target Account (Transfer In)
+      // Note: We use separate if statements to support self-transfers correctly (though rare)
+      if (tx.type === 'transfer' && tx.toAccountId === acc.id) {
+        newBalance += tx.amount;
+      }
+
+      return { ...acc, balance: newBalance };
+    }));
+
+    setTransactions(prev => [tx, ...prev].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+
+    if (tx.type === 'income' && canUseAutoRules) {
+      const auto = buildAutoAllocations(tx.id, tx.accountId, tx.amount, incomeRules, savingBuckets);
+      if (auto.length > 0) {
+        const accountAvailable = availableByAccount[tx.accountId] ?? 0;
+        const totalAuto = auto.reduce((sum, a) => sum + a.amount, 0);
+        if (totalAuto <= accountAvailable + tx.amount) {
+          setBucketAllocations((prev) => [...prev, ...auto]);
+        }
+      }
+    }
+  };
+
+  // --- Core Logic: Delete (Single Source of Truth) ---
+
+  const handleDeleteTransaction = (tx: Transaction) => {
+    if (!tx || typeof tx !== 'object' || !tx.id) {
+      console.error("Invalid transaction object passed to delete handler", tx);
+      return;
+    }
+    
+    setAccounts(prevAccounts => {
+      return prevAccounts.map(acc => {
+        let newBalance = acc.balance;
+
+        // Revert Source Account
+        if (acc.id === tx.accountId) {
+          if (tx.type === 'income') {
+            // Reverting income means subtracting
+            newBalance -= tx.amount;
+          } else {
+            // Reverting expense or transfer out means adding back
+            newBalance += tx.amount;
+          }
+        }
+
+        // Revert Target Account (for transfers)
+        if (tx.type === 'transfer' && tx.toAccountId && acc.id === tx.toAccountId) {
+          // Reverting transfer in means subtracting
+          newBalance -= tx.amount;
+        }
+
+        return { ...acc, balance: newBalance };
+      });
+    });
+
+    setTransactions(prev => prev.filter(t => t.id !== tx.id));
+    removeLinkedAutoAllocations(tx.id);
+  };
+
+  const handleDeleteAccount = (id: string) => {
+    if (!id) return;
+
+    const hasDependencies = transactions.some(t => t.accountId === id || t.toAccountId === id);
+    if (hasDependencies) {
+      console.warn('Cannot delete account because it is used by existing transactions.');
+      return;
+    }
+
+    setAccounts(prev => {
+      if (prev.length <= 1) {
+        console.warn('Cannot delete the last remaining account.');
+        return prev;
+      }
+      return prev.filter(a => a.id !== id);
+    });
+    setBucketAllocations((prev) => prev.filter((a) => a.accountId !== id));
+  };
+
+  // NEW: Centralized Category Deletion Logic
+  const handleDeleteCategory = (id: string) => {
+    if (!id) return;
+    setCategories(prev => prev.filter(c => c.id !== id));
+  };
+
+  const handleUpdateTransaction = (updatedTx: Transaction) => {
+    const oldTx = transactions.find((t) => t.id === updatedTx.id);
+    if (!oldTx) return;
+
+    setAccounts((currentAccounts) =>
+      currentAccounts.map((acc) => {
+        let newBalance = acc.balance;
+
+        if (acc.id === oldTx.accountId) {
+          if (oldTx.type === 'income') newBalance -= oldTx.amount;
+          else newBalance += oldTx.amount;
+        }
+        if (oldTx.type === 'transfer' && oldTx.toAccountId === acc.id) {
+          newBalance -= oldTx.amount;
+        }
+
+        if (acc.id === updatedTx.accountId) {
+          if (updatedTx.type === 'income') newBalance += updatedTx.amount;
+          else newBalance -= updatedTx.amount;
+        }
+        if (updatedTx.type === 'transfer' && updatedTx.toAccountId === acc.id) {
+          newBalance += updatedTx.amount;
+        }
+
+        return { ...acc, balance: newBalance };
+      })
+    );
+
+    setTransactions((currentTransactions) =>
+      currentTransactions
+        .map((t) => (t.id === updatedTx.id ? updatedTx : t))
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    );
+
+    removeLinkedAutoAllocations(updatedTx.id);
+    if (updatedTx.type === 'income' && canUseAutoRules) {
+      const auto = buildAutoAllocations(updatedTx.id, updatedTx.accountId, updatedTx.amount, incomeRules, savingBuckets);
+      if (auto.length > 0) {
+        setBucketAllocations((prev) => [...prev, ...auto]);
+      }
+    }
+  };
+
+  const handleAddBucket = (name: string, targetAmount: number, color: string) => {
+    if (!name.trim()) return;
+    if (Number.isFinite(bucketLimit) && savingBuckets.length >= bucketLimit) return;
+    const newBucket: SavingBucket = {
+      id: `bucket_${Date.now().toString(36)}`,
+      name: name.trim(),
+      targetAmount: Math.max(0, targetAmount),
+      color,
+      priority: savingBuckets.length + 1,
+    };
+    setSavingBuckets((prev) => [...prev, newBucket]);
+  };
+
+  const handleDeleteBucket = (bucketId: string) => {
+    setSavingBuckets((prev) => prev.filter((b) => b.id !== bucketId));
+    setBucketAllocations((prev) => prev.filter((a) => a.bucketId !== bucketId));
+    setIncomeRules((prev) => prev.filter((r) => r.bucketId !== bucketId));
+  };
+
+  const handleUpdateBucketTarget = (bucketId: string, targetAmount: number) => {
+    setSavingBuckets((prev) =>
+      prev.map((bucket) => (bucket.id === bucketId ? { ...bucket, targetAmount: Math.max(0, targetAmount) } : bucket))
+    );
+  };
+
+  const handleDeleteAllocation = (allocationId: string) => {
+    setBucketAllocations((prev) => prev.filter((a) => a.id !== allocationId));
+  };
+
+  const handleUpsertIncomeRule = (bucketId: string, type: 'percent' | 'fixed', value: number) => {
+    if (!canUseAutoRules) return;
+    setIncomeRules((prev) => {
+      const existing = prev.find((rule) => rule.bucketId === bucketId);
+      if (existing) {
+        return prev.map((rule) =>
+          rule.id === existing.id
+            ? { ...rule, type, value: Math.max(0, value), isActive: true }
+            : rule
+        );
+      }
+      return [
+        ...prev,
+        {
+          id: `rule_${Date.now().toString(36)}`,
+          bucketId,
+          type,
+          value: Math.max(0, value),
+          isActive: true,
+        },
+      ];
+    });
+  };
+
+  const handleDeleteIncomeRule = (ruleId: string) => {
+    setIncomeRules((prev) => prev.filter((rule) => rule.id !== ruleId));
+  };
+
+  const handleAddBudget = () => {
+    if (budgets[newBudgetCurrency] !== undefined) return;
+    setBudgets(prev => ({ ...prev, [newBudgetCurrency]: 0 }));
+  };
+
+  const handleDeleteBudget = (currency: string) => {
+    const next = { ...budgets };
+    delete next[currency];
+    setBudgets(next);
+  };
+  
+  // 預算刪除：二次確認
+  const handleBudgetDeleteClick = (code: string) => {
+    if (budgetDeleteConfirm === code) {
+      handleDeleteBudget(code);
+      setBudgetDeleteConfirm(null);
+    } else {
+      setBudgetDeleteConfirm(code);
+      setTimeout(() => setBudgetDeleteConfirm(prev => prev === code ? null : prev), 3000);
+    }
+  };
+
+  const handleExportData = () => {
+    const data = {
+      transactions,
+      accounts,
+      categories,
+      budgets,
+      planTier,
+      savingBuckets,
+      bucketAllocations,
+      incomeRules,
+      version: '1.1',
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `smartspend_backup_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        if (data.transactions && data.accounts) {
+          // Removed confirm/alert for sandbox compatibility
+          setTransactions(data.transactions);
+          setAccounts(data.accounts);
+          if (data.categories) setCategories(data.categories);
+          if (data.budgets) setBudgets(data.budgets);
+          if (data.planTier) setPlanTier(data.planTier);
+          if (data.savingBuckets) setSavingBuckets(data.savingBuckets);
+          if (data.bucketAllocations) setBucketAllocations(data.bucketAllocations);
+          if (data.incomeRules) setIncomeRules(data.incomeRules);
+          console.log('匯入成功');
+        } else {
+          console.error('匯入資料格式錯誤');
+        }
+      } catch (err) {
+        console.error('匯入失敗，請確認 JSON 檔案。');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // Centralized Filtering Logic
+  const filteredTransactions = useMemo(() => {
+    let list = transactions;
+    const now = new Date();
+    const todayStr = getLocalDateString(now);
+
+    if (displayRange === 'week') {
+      const oneWeekAgo = new Date(now);
+      oneWeekAgo.setDate(now.getDate() - 7);
+      const weekStr = getLocalDateString(oneWeekAgo);
+      list = list.filter(t => {
+        const d = t.date.split('T')[0];
+        return d >= weekStr && d <= todayStr;
+      });
+    } else if (displayRange === 'month') {
+      const startOfMonth = getLocalDateString(new Date(now.getFullYear(), now.getMonth(), 1));
+      const endOfMonth = getLocalDateString(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+      list = list.filter(t => {
+        const d = t.date.split('T')[0];
+        return d >= startOfMonth && d <= endOfMonth;
+      });
+    } else if (displayRange === 'custom') {
+      list = list.filter(t => {
+        const d = t.date.split('T')[0];
+        return d >= customStart && d <= customEnd;
+      });
+    }
+
+    const q = searchQuery.toLowerCase().trim();
+    return q ? list.filter(t => t.description.toLowerCase().includes(q) || t.category.toLowerCase().includes(q)) : list;
+  }, [transactions, searchQuery, displayRange, customStart, customEnd]);
+
+  const navItems = [
+    { id: 'home', icon: Home, label: '首頁' },
+    { id: 'accounts', icon: Wallet, label: '帳戶' },
+    { id: 'charts', icon: PieChart, label: '分析' },
+    { id: 'settings', icon: Settings, label: '設定' }
+  ];
+
+  return (
+    <div className="min-h-screen pb-24 bg-[#FAF7F2]">
+      <header className="bg-white/80 backdrop-blur-md border-b border-[#E6DED6] sticky top-0 z-50">
+        <div className="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 bg-[#D08C70] rounded-xl flex items-center justify-center shadow-lg shadow-[#D08C70]/20">
+              <span className="text-white"><Wallet size={18} strokeWidth={2.5} /></span>
+            </div>
+            <h1 className="text-lg font-black tracking-tighter">SmartSpend <span className="text-[#D08C70]">AI</span></h1>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-6 pt-6">
+        {activeTab === 'home' && (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <TransactionForm onAdd={handleAddTransaction} categories={categories} accounts={accounts} />
+            
+            <Dashboard 
+              transactions={filteredTransactions} 
+              accounts={accounts} 
+              budgets={budgets} 
+              categories={categories}
+              savingBuckets={savingBuckets}
+              bucketTotals={bucketTotals}
+              reservedByAccount={reservedByAccount}
+              availableByAccount={availableByAccount}
+              displayRange={displayRange}
+              setDisplayRange={setDisplayRange}
+              customStart={customStart}
+              setCustomStart={setCustomStart}
+              customEnd={customEnd}
+              setCustomEnd={setCustomEnd}
+            />
+
+            {canUse('saving_assistant', planTier) && (
+              <SavingAssistant
+                planTier={planTier}
+                bucketLimit={bucketLimit}
+                canUseAutoRules={canUseAutoRules}
+                accounts={accounts}
+                buckets={savingBuckets}
+                allocations={bucketAllocations}
+                incomeRules={incomeRules}
+                onAddBucket={handleAddBucket}
+                onDeleteBucket={handleDeleteBucket}
+                onUpdateBucketTarget={handleUpdateBucketTarget}
+                onAddAllocation={addManualBucketAllocation}
+                onDeleteAllocation={handleDeleteAllocation}
+                onUpsertIncomeRule={handleUpsertIncomeRule}
+                onDeleteIncomeRule={handleDeleteIncomeRule}
+              />
+            )}
+
+            <div className="relative mb-4">
+              <input type="text" placeholder="搜尋描述或分類..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full px-12 py-4 bg-white border border-[#E6DED6] rounded-2xl focus:ring-2 focus:ring-[#D08C70] outline-none font-bold text-sm" />
+              <svg className="w-5 h-5 text-[#B7ADA4] absolute left-4 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            </div>
+            
+            <TransactionList 
+              transactions={filteredTransactions} 
+              onDelete={handleDeleteTransaction} 
+              onUpdate={handleUpdateTransaction} 
+              categories={categories} 
+              accounts={accounts} 
+            />
+          </div>
+        )}
+        {activeTab === 'accounts' && (
+          <AccountManager 
+            accounts={accounts} 
+            reservedByAccount={reservedByAccount}
+            availableByAccount={availableByAccount}
+            onUpdate={setAccounts} 
+            onDelete={handleDeleteAccount} 
+          />
+        )}
+        {activeTab === 'charts' && <Analysis transactions={transactions} categories={categories} />}
+        {activeTab === 'settings' && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2">
+             <div className="custom-card p-6 md:p-8 rounded-[2.5rem]">
+               <h3 className="font-extrabold text-[#1A1A1A] text-base mb-4 flex items-center gap-2">
+                 <span className="w-1.5 h-6 bg-[#1A1A1A] rounded-full"></span>
+                 方案模式
+               </h3>
+               <div className="grid grid-cols-2 gap-3">
+                 <button
+                   onClick={() => setPlanTier('mvp')}
+                   className={`h-11 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${planTier === 'mvp' ? 'bg-[#1A1A1A] text-white' : 'bg-[#FAF7F2] text-[#6B6661] border border-[#E6DED6]'}`}
+                 >
+                   MVP
+                 </button>
+                 <button
+                   onClick={() => setPlanTier('pro')}
+                   className={`h-11 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${planTier === 'pro' ? 'bg-[#D08C70] text-white' : 'bg-[#FAF7F2] text-[#6B6661] border border-[#E6DED6]'}`}
+                 >
+                   PRO
+                 </button>
+               </div>
+               <p className="text-[10px] font-bold text-[#B7ADA4] mt-3">目前為本機開關，正式上架時可改為後端訂閱權限。</p>
+             </div>
+             
+             {/* Redesigned Budget Settings */}
+             <div className="custom-card p-6 md:p-8 rounded-[2.5rem] mb-12 space-y-8">
+               <div className="flex items-center justify-between">
+                 <h3 className="font-extrabold text-[#1A1A1A] text-base flex items-center gap-2">
+                    <span className="w-1.5 h-6 bg-[#D08C70] rounded-full"></span>
+                    預算管理
+                 </h3>
+               </div>
+               
+               <div className="space-y-4">
+                 <div className="flex items-center gap-2 px-1">
+                   <div className="w-1.5 h-4 rounded-full bg-[#1A1A1A]"></div>
+                   <h4 className="text-[11px] font-black text-[#6B6661] uppercase tracking-[0.2em]">現有預算</h4>
+                 </div>
+                 
+                 <div className="space-y-4">
+                   {Object.entries(budgets).map(([code, amount]) => {
+                      const currency = SUPPORTED_CURRENCIES.find(c => c.code === code);
+                      const isConfirming = budgetDeleteConfirm === code;
+                      const isFocused = focusedBudgetInput === code;
+
+                      return (
+                        <div key={code} className="custom-card p-6 rounded-[2.5rem] flex justify-between items-center bg-white group hover:border-[#D08C70]/30 transition-all border border-transparent">
+                          <div className="flex-1">
+                               {/* Title synced with currency name */}
+                               <h4 className="font-black text-[#1A1A1A] text-lg flex items-center gap-2 mb-1">
+                                 {currency?.name || code}
+                               </h4>
+                               <div className="flex items-center">
+                                 <span className="text-xl font-black text-[#1A1A1A] mr-1 tracking-tighter">{currency?.symbol}</span>
+                                  <input 
+                                     type="text" 
+                                     inputMode="decimal"
+                                     value={isFocused ? tempBudgetValue : amount.toLocaleString()} 
+                                     onFocus={() => {
+                                      setTempBudgetValue(formatNumericWithCommas(amount.toString()));
+                                      setFocusedBudgetInput(code);
+                                     }}
+                                     onBlur={() => {
+                                      setFocusedBudgetInput(null);
+                                      setTempBudgetValue('');
+                                     }}
+                                     onChange={(e) => {
+                                      const next = e.target.value.replace(/,/g, '').trim();
+                                      if (!next) {
+                                        setTempBudgetValue('');
+                                        setBudgets(prev => ({ ...prev, [code]: 0 }));
+                                        return;
+                                      }
+                                      if (!/^\d*\.?\d*$/.test(next)) return;
+                                      const normalized = next.startsWith('.') ? `0${next}` : next;
+                                      setTempBudgetValue(formatNumericWithCommas(normalized));
+                                      const num = parseFloat(normalized);
+                                      setBudgets(prev => ({ ...prev, [code]: isNaN(num) ? 0 : num }));
+                                     }}
+                                     className="w-full bg-transparent font-black text-xl text-[#1A1A1A] outline-none tracking-tighter placeholder:text-[#E6DED6]"
+                                   />
+                               </div>
+                          </div>
+                          
+                          {/* Unified Delete Button Style */}
+                          <button 
+                            onClick={() => handleBudgetDeleteClick(code)} 
+                            className={`flex items-center justify-center transition-all rounded-xl ${
+                              isConfirming 
+                                ? 'bg-red-500 text-white px-3 py-2 shadow-md scale-105' 
+                                : 'text-[#B7ADA4] hover:text-red-500 hover:bg-red-50 p-3'
+                            }`}
+                            title={isConfirming ? "再次點擊確認刪除" : "刪除預算"}
+                          >
+                            {isConfirming ? (
+                              <span className="text-[10px] font-black whitespace-nowrap">確認刪除</span>
+                            ) : (
+                              <Trash2 size={20} />
+                            )}
+                          </button>
+                        </div>
+                      );
+                   })}
+                   {Object.keys(budgets).length === 0 && (
+                     <div className="col-span-full p-6 text-center text-[#B7ADA4] text-xs font-bold bg-[#FAF7F2] rounded-2xl border border-dashed border-[#E6DED6]">
+                       目前沒有任何預算項目
+                     </div>
+                   )}
+                 </div>
+               </div>
+
+               <div className="p-5 bg-[#FAF7F2] rounded-[2rem] border-2 border-[#E6DED6] space-y-4">
+                  <h4 className="text-[10px] font-black text-[#D08C70] uppercase tracking-widest px-1">新增預算幣別</h4>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <select 
+                        value={newBudgetCurrency} 
+                        onChange={e => setNewBudgetCurrency(e.target.value)}
+                        className="w-full px-4 py-3 rounded-xl border border-[#E6DED6] bg-white outline-none font-bold text-xs text-[#1A1A1A] appearance-none"
+                      >
+                        {SUPPORTED_CURRENCIES.filter(c => budgets[c.code] === undefined).map(c => (
+                          <option key={c.code} value={c.code}>{c.name}</option>
+                        ))}
+                      </select>
+                      {/* Dropdown Icon */}
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#B7ADA4]">
+                        <ChevronDown size={18} strokeWidth={2.5} />
+                      </div>
+                    </div>
+                    <button 
+                      onClick={handleAddBudget}
+                      disabled={SUPPORTED_CURRENCIES.every(c => budgets[c.code] !== undefined)}
+                      className="px-5 bg-[#1A1A1A] text-white rounded-xl text-[10px] font-black uppercase disabled:opacity-50 whitespace-nowrap shadow-lg tap-active"
+                    >
+                      新增
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-[#B7ADA4] font-bold pl-1">可為每種幣別設定預算。</p>
+               </div>
+             </div>
+
+             <CategoryManager 
+               categories={categories} 
+               onUpdateCategories={setCategories} 
+               onDelete={handleDeleteCategory} // Pass the delete handler
+             />
+             
+             <div className="custom-card p-6 md:p-8 rounded-[2.5rem] mb-12">
+               <h3 className="font-extrabold text-[#1A1A1A] text-base mb-6 flex items-center gap-2">
+                  <span className="w-1.5 h-6 bg-[#1A1A1A] rounded-full"></span>
+                  資料備份與重置               </h3>
+               <div className="grid grid-cols-2 gap-4">
+                  <button onClick={handleExportData} className="flex flex-col items-center justify-center p-6 bg-[#FAF7F2] border-2 border-[#E6DED6] rounded-2xl hover:border-[#D08C70] transition-all gap-2 group">
+                     <Download className="text-[#B7ADA4] group-hover:text-[#D08C70]" />
+                     <span className="text-xs font-black text-[#6B6661]">匯出資料 (JSON)</span>
+                  </button>
+                  <label className="flex flex-col items-center justify-center p-6 bg-[#FAF7F2] border-2 border-[#E6DED6] rounded-2xl hover:border-[#729B79] transition-all gap-2 cursor-pointer group">
+                     <Upload className="text-[#B7ADA4] group-hover:text-[#729B79]" />
+                     <span className="text-xs font-black text-[#6B6661]">匯入資料</span>
+                     <input type="file" accept=".json" className="hidden" onChange={handleImportData} />
+                  </label>
+               </div>
+               <div className="mt-6 pt-6 border-t border-[#E6DED6]">
+                 <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="text-[#D66D5B] text-xs font-bold flex items-center gap-2 hover:opacity-70">
+                    <RefreshCw size={14} /> 清除本機資料                 </button>
+               </div>
+             </div>
+          </div>
+        )}
+      </main>
+
+      <nav className="fixed bottom-0 left-0 right-0 z-50 px-4 pb-3">
+        <div className="max-w-4xl mx-auto bg-white/90 backdrop-blur-xl border border-[#E6DED6] rounded-2xl px-4 py-3 pb-safe flex justify-around items-center shadow-lg">
+          {navItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => {
+                setActiveTab(item.id as any);
+              }}
+              id={item.id === 'settings' ? 'manage-cats-btn' : undefined}
+              className={`flex flex-col items-center gap-1 transition-all tap-active ${activeTab === item.id ? 'text-[#D08C70] scale-110' : 'text-[#B7ADA4]'}`}
+            >
+              <item.icon size={22} strokeWidth={activeTab === item.id ? 2.5 : 2} />
+              <span className="text-[9px] font-black uppercase tracking-widest">{item.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+    </div>
+  );
+};
+
+export default App;
+
