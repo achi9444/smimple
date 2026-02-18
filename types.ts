@@ -32,6 +32,13 @@ export interface Account {
   icon: string;
 }
 
+export interface SpendingScope {
+  id: string;
+  name: string;
+  color: string;
+  isSystem?: boolean;
+}
+
 export interface Transaction {
   id: string;
   type: TransactionType;
@@ -42,6 +49,7 @@ export interface Transaction {
   accountId: string;
   toAccountId?: string;
   bucketId?: string;
+  scopeId?: string;
   date: string;
 }
 
@@ -89,6 +97,10 @@ export interface BucketSpend {
   linkedTransactionId: string;
   createdAt: string;
 }
+
+export const DEFAULT_SCOPES: SpendingScope[] = [
+  { id: 'scope_personal', name: '個人', color: '#D08C70', isSystem: true },
+];
 
 export const DEFAULT_CATEGORIES: Category[] = [
   { id: 'cat_salary', name: '薪資', icon: 'Banknote', color: '#729B79', type: 'income', isSystem: true },
