@@ -1,4 +1,4 @@
-﻿import { Account, BucketAllocation, BucketSpend, Category, DisplayRange, IncomeAllocationRule, PlanTier, SavingBucket, Transaction, TransactionType } from '../types';
+﻿import { Account, BucketAllocation, BucketSpend, BudgetItem, Category, DisplayRange, IncomeAllocationRule, PlanTier, SavingBucket, SpendingScope, Transaction, TransactionType } from '../types';
 
 
 export interface LearnedTransactionPref {
@@ -21,6 +21,7 @@ const LEGACY_KEYS = {
   transactions: 'ss_transactions',
   accounts: 'ss_accounts',
   categories: 'ss_categories',
+  scopes: 'ss_scopes',
   budgets: 'ss_budgets',
   displayRange: 'ss_display_range',
   planTier: 'ss_plan_tier',
@@ -41,7 +42,8 @@ export interface AppStorageData {
   transactions: Transaction[];
   accounts: Account[];
   categories: Category[];
-  budgets: Record<string, number>;
+  scopes: SpendingScope[];
+  budgets: BudgetItem[];
   displayRange: DisplayRange;
   planTier: PlanTier;
   savingBuckets: SavingBucket[];
@@ -137,11 +139,45 @@ const readLegacyLocalStorage = () => {
   return legacy;
 };
 
+
+const normalizeBudgetItems = (raw: unknown): BudgetItem[] => {
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+      .map((item) => ({
+        id: typeof item.id === 'string' && item.id ? item.id : `budget_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : '每月預算',
+        currencyCode: typeof item.currencyCode === 'string' && item.currencyCode ? item.currencyCode : 'TWD',
+        amount: Number.isFinite(Number(item.amount)) ? Math.max(0, Number(item.amount)) : 0,
+        period: item.period === 'week' || item.period === 'year' ? item.period : 'month',
+        scopeIds:
+          Array.isArray(item.scopeIds) && item.scopeIds.length
+            ? (item.scopeIds.filter((id) => id === 'all' || typeof id === 'string') as Array<'all' | string>)
+            : item.scopeId === 'all' || typeof item.scopeId === 'string'
+              ? [item.scopeId as 'all' | string]
+              : ['all'],
+      }));
+  }
+
+  if (raw && typeof raw === 'object') {
+    return Object.entries(raw as Record<string, unknown>).map(([currencyCode, amount]) => ({
+      id: `budget_${currencyCode}`,
+      name: '每月預算',
+      currencyCode,
+      amount: Number.isFinite(Number(amount)) ? Math.max(0, Number(amount)) : 0,
+      period: 'month',
+      scopeIds: ['all'],
+    }));
+  }
+
+  return [];
+};
 const mergeWithDefaults = (defaults: AppStorageData, source: Partial<Record<AppStorageKey, unknown>>): AppStorageData => ({
   transactions: Array.isArray(source.transactions) ? (source.transactions as Transaction[]) : defaults.transactions,
   accounts: Array.isArray(source.accounts) ? (source.accounts as Account[]) : defaults.accounts,
   categories: Array.isArray(source.categories) ? (source.categories as Category[]) : defaults.categories,
-  budgets: source.budgets && typeof source.budgets === 'object' ? (source.budgets as Record<string, number>) : defaults.budgets,
+  scopes: Array.isArray(source.scopes) ? (source.scopes as SpendingScope[]) : defaults.scopes,
+  budgets: source.budgets !== undefined ? normalizeBudgetItems(source.budgets) : defaults.budgets,
   displayRange: typeof source.displayRange === 'string' ? (source.displayRange as DisplayRange) : defaults.displayRange,
   planTier: source.planTier === 'pro' || source.planTier === 'mvp' ? source.planTier : defaults.planTier,
   savingBuckets: Array.isArray(source.savingBuckets) ? (source.savingBuckets as SavingBucket[]) : defaults.savingBuckets,
@@ -240,4 +276,8 @@ export const loadLearnedPrefsStorage = async (): Promise<LearnedPrefsMap> => {
 export const saveLearnedPrefsStorage = async (prefs: LearnedPrefsMap) => {
   await writeByKey(LEARNED_PREFS_DB_KEY, prefs);
 };
+
+
+
+
 

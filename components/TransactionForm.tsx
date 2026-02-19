@@ -6,11 +6,12 @@ import { normalizeImeNumericRaw } from '../utils/numberInput';
 import { SUPPORTED_CURRENCIES } from '../types';
 import { loadLearnedPrefsStorage, saveLearnedPrefsStorage } from '../services/appStorage';
 import type { LearnedPrefsMap, LearnedTransactionPref } from '../services/appStorage';
-import type { Account, Category, SavingBucket, Transaction, TransactionType } from '../types';
+import type { Account, Category, SavingBucket, SpendingScope, Transaction, TransactionType } from '../types';
 
 interface TransactionFormProps {
   onAdd: (tx: Omit<Transaction, 'id'>) => void;
   categories: Category[];
+  scopes: SpendingScope[];
   accounts: Account[];
   savingBuckets: SavingBucket[];
   bucketSpendableByAccount: Record<string, number>;
@@ -80,7 +81,7 @@ const normalizeLoose = (text: string) =>
     .replace(/\s+/g, '')
     .replace(/[.,!?，。！？、:;：；'"`~@#$%^&*()_+=\-[\]{}<>\\/|]/g, '');
 const CASH_HINT_KEYWORDS = ['現金', 'cash', 'wallet'];
-const BANK_HINT_KEYWORDS = ['帳戶', '账户', '戶頭', '户头', '銀行', '银行', 'bank', 'account', 'acc'];
+const BANK_HINT_KEYWORDS = ['\u5e33\u6236', '\u8d26\u6237', '\u6236\u982d', '\u6237\u5934', '\u9280\u884c', '\u94f6\u884c', 'bank', 'account', 'acc'];
 
 const hasAnyToken = (text: string, tokens: string[]) => tokens.some((token) => text.includes(token));
 
@@ -111,7 +112,7 @@ const similarityByChars = (a: string, b: string) => {
 
 const accountAliases = (name: string) => {
   const normalized = normalizeLoose(name);
-  const noSuffix = normalized.replace(/(帳戶|账户|戶頭|户头|銀行|银行|bank|acc|account|wallet|card|卡)$/g, '');
+  const noSuffix = normalized.replace(/(\\u5e33\\u6236|\\u8d26\\u6237|\\u6236\\u982d|\\u6237\\u5934|\\u9280\\u884c|\\u94f6\\u884c|bank|acc|account|wallet|card|\\u5361)$/g, '');
   const aliases = new Set<string>();
   if (normalized) aliases.add(normalized);
   if (noSuffix) aliases.add(noSuffix);
@@ -151,7 +152,7 @@ const sanitizeDescription = (text: string, accounts: Account[]) => {
         result = result.replace(new RegExp(safeAlias, 'gi'), ' ');
       });
   });
-  result = result.replace(/(現金|cash|帳戶|账户|戶頭|户头|銀行|银行|bank|acc|account)/gi, ' ');
+  result = result.replace(/(\\u73fe\\u91d1|cash|\\u5e33\\u6236|\\u8d26\\u6237|\\u6236\\u982d|\\u6237\\u5934|\\u9280\\u884c|\\u94f6\\u884c|bank|acc|account)/gi, ' ');
   return result.replace(/\s+/g, ' ').trim();
 };
 
@@ -166,13 +167,14 @@ const upsertLearnedPref = (prefs: LearnedPrefsMap, key: string, pref: LearnedPre
   };
 };
 
-const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, accounts, savingBuckets, bucketSpendableByAccount }) => {
+const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [], scopes = [], accounts = [], savingBuckets = [], bucketSpendableByAccount = {} }) => {
   const [type, setType] = useState<TransactionType>('expense');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
+  const [scopeId, setScopeId] = useState(scopes?.[0]?.id || 'scope_personal');
   const [date, setDate] = useState(getToday());
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? '');
-  const [toAccountId, setToAccountId] = useState(accounts[1]?.id ?? accounts[0]?.id ?? '');
+  const [accountId, setAccountId] = useState(accounts?.[0]?.id ?? '');
+  const [toAccountId, setToAccountId] = useState(accounts?.[1]?.id ?? accounts?.[0]?.id ?? '');
   const [aiInput, setAiInput] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiHint, setAiHint] = useState('');
@@ -182,6 +184,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   const [userAdjustedToAccount, setUserAdjustedToAccount] = useState(false);
   const [sourceAccountMenuOpen, setSourceAccountMenuOpen] = useState(false);
   const [targetAccountMenuOpen, setTargetAccountMenuOpen] = useState(false);
+  const [pickerModal, setPickerModal] = useState<'scope' | 'bucket' | null>(null);
   const [learnedPrefs, setLearnedPrefs] = useState<LearnedPrefsMap>({});
 
   const toneByType: Record<TransactionType, string> = {
@@ -192,6 +195,10 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   const activeTone = toneByType[type];
   const sourceTone = type === 'transfer' ? toneByType.expense : activeTone;
   const targetTone = type === 'transfer' ? toneByType.income : activeTone;
+  const renderAccountIcon = (iconName: string, iconColor: string) => {
+    const Icon = (LucideIcons as any)[iconName] || LucideIcons.Wallet;
+    return <Icon size={12} strokeWidth={2} style={{ color: iconColor }} />;
+  };
 
   const filteredCategories = useMemo(
     () => categories.filter((c) => !c.type || c.type === type),
@@ -228,7 +235,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       if (!target) return undefined;
       let best: Account | undefined;
       let bestScore = 0;
-      accounts.forEach((acc) => {
+      accounts.filter((acc) => !acc.isDisabled && !acc.isArchived).forEach((acc) => {
         const accountNormalized = normalizeLoose(acc.name);
         const hintBoost = getAccountHintBoost(target, accountNormalized);
         const aliases = accountAliases(acc.name);
@@ -262,7 +269,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     (text: string) => {
       const target = normalizeLoose(text);
       if (!target) return [] as Account[];
-      const scored = accounts
+      const scored = accounts.filter((acc) => !acc.isDisabled && !acc.isArchived)
         .map((acc) => {
           const accountNormalized = normalizeLoose(acc.name);
           const hintBoost = getAccountHintBoost(target, accountNormalized);
@@ -284,11 +291,12 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     [accounts]
   );
 
+  const availableAccounts = useMemo(() => accounts.filter((a) => !a.isDisabled && !a.isArchived), [accounts]);
   const [category, setCategory] = useState('');
-  const fromAccount = accounts.find((a) => a.id === accountId);
-  const toAccount = accounts.find((a) => a.id === toAccountId);
-  const selectedSourceAccount = fromAccount || accounts[0];
-  const selectedTargetAccount = toAccount || accounts[0];
+  const fromAccount = availableAccounts.find((a) => a.id === accountId);
+  const toAccount = availableAccounts.find((a) => a.id === toAccountId);
+  const selectedSourceAccount = fromAccount || availableAccounts[0];
+  const selectedTargetAccount = toAccount || availableAccounts[0];
   const parsedAmount = Number(amount) || 0;
   const getCurrencySymbol = (currencyCode: string) =>
     SUPPORTED_CURRENCIES.find((c) => c.code === currencyCode)?.symbol || '$';
@@ -313,7 +321,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
         const spendable = bucketSpendableByAccount[key] || 0;
         return { ...bucket, spendable };
       })
-      .filter((bucket) => bucket.spendable > 0);
+      ;
   }, [type, savingBuckets, accountId, bucketSpendableByAccount]);
   const selectedBucketSpendable = useMemo(() => {
     if (!spendBucketId) return 0;
@@ -327,13 +335,19 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
   }, [filteredCategories, category]);
 
   React.useEffect(() => {
-    if (!accounts.some((a) => a.id === accountId)) {
-      setAccountId(accounts[0]?.id ?? '');
+    if (!availableAccounts.some((a) => a.id === accountId)) {
+      setAccountId(availableAccounts[0]?.id ?? '');
     }
-    if (!accounts.some((a) => a.id === toAccountId)) {
-      setToAccountId(accounts[1]?.id ?? accounts[0]?.id ?? '');
+    if (!availableAccounts.some((a) => a.id === toAccountId)) {
+      setToAccountId(availableAccounts[1]?.id ?? availableAccounts[0]?.id ?? '');
     }
-  }, [accounts, accountId, toAccountId]);
+  }, [availableAccounts, accountId, toAccountId]);
+
+  React.useEffect(() => {
+    if (!scopes.some((s) => s.id === scopeId)) {
+      setScopeId(scopes?.[0]?.id || 'scope_personal');
+    }
+  }, [scopes, scopeId]);
 
   React.useEffect(() => {
     if (type !== 'expense') {
@@ -379,8 +393,9 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     const timer = setTimeout(async () => {
       const result = await parseTransactionAI(
         desc,
-        accounts.map((a) => a.name),
-        categories
+        availableAccounts.map((a) => a.name),
+        categories,
+        { localOnly: true }
       );
       if (!result) return;
 
@@ -419,7 +434,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     fromAccountId: string,
     txDateIso: string,
     targetAccountId?: string,
-    expenseBucketId?: string
+    expenseBucketId?: string,
+    txScopeId?: string
   ) => {
     const sourceAccount = accounts.find((a) => a.id === fromAccountId);
     if (!sourceAccount) return;
@@ -433,6 +449,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
       accountId: fromAccountId,
       toAccountId: txType === 'transfer' ? targetAccountId : undefined,
       bucketId: txType === 'expense' && expenseBucketId ? expenseBucketId : undefined,
+      scopeId: txScopeId,
       date: txDateIso,
     });
   };
@@ -454,7 +471,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     const cleanedDescription = sanitizeDescription(description.trim(), accounts);
     const finalDescription = cleanedDescription || (type === 'transfer' ? '帳戶轉帳' : finalCategory);
 
-    addTransaction(type, parsedAmount, finalDescription, finalCategory, accountId, new Date(safeDate).toISOString(), toAccountId, spendBucketId || undefined);
+    addTransaction(type, parsedAmount, finalDescription, finalCategory, accountId, new Date(safeDate).toISOString(), toAccountId, spendBucketId || undefined, scopeId);
 
     if (description.trim()) {
       persistLearnedPref(makePrefKey(type, description), {
@@ -483,7 +500,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
     try {
       const result = await parseTransactionAI(
         aiInput,
-        accounts.map((a) => a.name),
+        availableAccounts.map((a) => a.name),
         categories
       );
 
@@ -539,7 +556,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
           finalSourceAccount.id,
           txDateIso,
           finalTargetAccount?.id,
-          undefined
+          undefined,
+          scopeId
         );
 
         persistLearnedPref(makePrefKey(nextType, txDescription), {
@@ -651,6 +669,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
         style={{ borderColor: `${activeTone}40` }}
       />
 
+
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-2">
           <p className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest">
@@ -660,7 +679,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
             {selectedSourceAccount && (
                 <button
                   type="button"
-                  onClick={() => setSourceAccountMenuOpen((prev) => !prev)}
+                  onClick={() => setSourceAccountMenuOpen(true)}
                   className="w-full rounded-xl border bg-[#FAF7F2] px-3 py-2 text-left shadow-sm"
                   style={{ borderColor: sourceTone }}
                 >
@@ -672,7 +691,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
                   return (
                     <>
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-black text-[#1A1A1A]">{selectedSourceAccount.name}</span>
+                        <span className="text-xs font-black text-[#1A1A1A] flex items-center gap-1.5">{renderAccountIcon(selectedSourceAccount.icon, selectedSourceAccount.color)}{selectedSourceAccount.name}</span>
                         <div className="flex items-center gap-2">
                           <LucideIcons.ChevronDown
                             size={14}
@@ -704,44 +723,42 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
               </button>
             )}
             {sourceAccountMenuOpen && (
-              <div className="absolute z-[70] mt-2 max-h-64 w-full overflow-auto rounded-xl border border-[#E6DED6] bg-white p-2 shadow-xl">
-                <div className="grid grid-cols-1 gap-2">
-                  {accounts.map((acc) => {
-                    const active = accountId === acc.id;
-                    const projection = getProjectedBalance(acc, 'source');
-                    const isIncrease = projection.delta >= 0;
-                    const DeltaIcon = isIncrease ? LucideIcons.ArrowUpRight : LucideIcons.ArrowDownRight;
-                    return (
-                      <button
-                        key={acc.id}
-                        type="button"
-                        onClick={() => {
-                          setAccountId(acc.id);
-                          setUserAdjustedAccount(true);
-                          setSourceAccountMenuOpen(false);
-                        }}
-                        className={`w-full rounded-xl border px-3 py-2 text-left transition-all ${active ? 'bg-[#FAF7F2] shadow-sm' : 'bg-white'}`}
-                        style={{ borderColor: active ? sourceTone : '#E6DED6' }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-black text-[#1A1A1A]">{acc.name}</span>
-                          <span className="text-[10px] font-bold text-[#B7ADA4]">
-                            {projection.symbol}
-                            {acc.balance.toLocaleString()}
-                          </span>
-                        </div>
-                        <div className={`mt-1 flex items-center gap-1 text-[10px] font-bold ${isIncrease ? 'text-[#729B79]' : 'text-[#D66D5B]'}`}>
-                          <DeltaIcon size={12} />
-                          <span>
-                            {projection.delta >= 0 ? '+' : ''}
-                            {projection.symbol}
-                            {Math.abs(projection.delta).toLocaleString()} {'->'} {projection.symbol}
-                            {projection.nextBalance.toLocaleString()}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
+              <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/40" onClick={() => setSourceAccountMenuOpen(false)} />
+                <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl overflow-hidden">
+                  <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
+                    <h4 className="text-sm font-black text-[#1A1A1A]">選擇來源帳戶</h4>
+                    <button onClick={() => setSourceAccountMenuOpen(false)} className="text-[#B7ADA4] hover:text-[#1A1A1A]"><LucideIcons.X size={18} /></button>
+                  </div>
+                  <div className="max-h-[60vh] overflow-y-auto p-2 space-y-2">
+                    {availableAccounts.map((acc) => {
+                      const active = accountId === acc.id;
+                      const projection = getProjectedBalance(acc, 'source');
+                      const isIncrease = projection.delta >= 0;
+                      const DeltaIcon = isIncrease ? LucideIcons.ArrowUpRight : LucideIcons.ArrowDownRight;
+                      return (
+                        <button
+                          key={acc.id}
+                          type="button"
+                          onClick={() => {
+                            setAccountId(acc.id);
+                            setUserAdjustedAccount(true);
+                            setSourceAccountMenuOpen(false);
+                          }}
+                          className={`w-full rounded-xl border px-3 py-2 text-left transition-all ${active ? 'bg-[#F7EEE8] border-[#D08C70]/40' : 'bg-white border-[#E6DED6]'}`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-[#1A1A1A] flex items-center gap-1.5">{renderAccountIcon(acc.icon, acc.color)}{acc.name}</span>
+                            <span className="text-[10px] font-bold text-[#B7ADA4]">{projection.symbol}{acc.balance.toLocaleString()}</span>
+                          </div>
+                          <div className={`mt-1 flex items-center gap-1 text-[10px] font-bold ${isIncrease ? 'text-[#729B79]' : 'text-[#D66D5B]'}`}>
+                            <DeltaIcon size={12} />
+                            <span>{projection.delta >= 0 ? '+' : ''}{projection.symbol}{Math.abs(projection.delta).toLocaleString()} {'->'} {projection.symbol}{projection.nextBalance.toLocaleString()}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
@@ -755,7 +772,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
               {selectedTargetAccount && (
                 <button
                   type="button"
-                  onClick={() => setTargetAccountMenuOpen((prev) => !prev)}
+                  onClick={() => setTargetAccountMenuOpen(true)}
                   className="w-full rounded-xl border bg-[#FAF7F2] px-3 py-2 text-left shadow-sm"
                   style={{ borderColor: targetTone }}
                 >
@@ -765,7 +782,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
                     return (
                       <>
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-black text-[#1A1A1A]">{selectedTargetAccount.name}</span>
+                          <span className="text-xs font-black text-[#1A1A1A] flex items-center gap-1.5">{renderAccountIcon(selectedTargetAccount.icon, selectedTargetAccount.color)}{selectedTargetAccount.name}</span>
                           <div className="flex items-center gap-2">
                             <LucideIcons.ChevronDown
                               size={14}
@@ -796,51 +813,48 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
                 </button>
               )}
               {targetAccountMenuOpen && (
-                <div className="absolute z-[70] mt-2 max-h-64 w-full overflow-auto rounded-xl border border-[#E6DED6] bg-white p-2 shadow-xl">
-                  <div className="grid grid-cols-1 gap-2">
-                    {accounts.map((acc) => {
-                      const active = toAccountId === acc.id;
-                      const projection = getProjectedBalance(acc, 'target');
-                      const showDelta = parsedAmount > 0;
-                      return (
-                        <button
-                          key={acc.id}
-                          type="button"
-                          onClick={() => {
-                            setToAccountId(acc.id);
-                            setUserAdjustedToAccount(true);
-                            setTargetAccountMenuOpen(false);
-                          }}
-                          className={`w-full rounded-xl border px-3 py-2 text-left transition-all ${active ? 'bg-[#FAF7F2] shadow-sm' : 'bg-white'}`}
-                          style={{ borderColor: active ? targetTone : '#E6DED6' }}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-black text-[#1A1A1A]">{acc.name}</span>
-                            <span className="text-[10px] font-bold text-[#B7ADA4]">
-                              {projection.symbol}
-                              {acc.balance.toLocaleString()}
-                            </span>
-                          </div>
-                          <div className="mt-1 flex items-center justify-between">
-                            {showDelta ? (
-                              <div className="flex items-center gap-1 text-[10px] font-bold" style={{ color: targetTone }}>
-                                <LucideIcons.TrendingUp size={12} />
-                                <span>
-                                  +{projection.symbol}
-                                  {projection.delta.toLocaleString()}
-                                </span>
-                              </div>
-                            ) : (
-                              <div />
-                            )}
-                            <span className="text-[10px] font-bold text-[#6B6661]">
-                              {projection.symbol}
-                              {projection.nextBalance.toLocaleString()}
-                            </span>
-                          </div>
-                        </button>
-                      );
-                    })}
+                <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+                  <div className="absolute inset-0 bg-black/40" onClick={() => setTargetAccountMenuOpen(false)} />
+                  <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl overflow-hidden">
+                    <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
+                      <h4 className="text-sm font-black text-[#1A1A1A]">選擇目標帳戶</h4>
+                      <button onClick={() => setTargetAccountMenuOpen(false)} className="text-[#B7ADA4] hover:text-[#1A1A1A]"><LucideIcons.X size={18} /></button>
+                    </div>
+                    <div className="max-h-[60vh] overflow-y-auto p-2 space-y-2">
+                      {availableAccounts.map((acc) => {
+                        const active = toAccountId === acc.id;
+                        const projection = getProjectedBalance(acc, 'target');
+                        const showDelta = parsedAmount > 0;
+                        return (
+                          <button
+                            key={acc.id}
+                            type="button"
+                            onClick={() => {
+                              setToAccountId(acc.id);
+                              setUserAdjustedToAccount(true);
+                              setTargetAccountMenuOpen(false);
+                            }}
+                            className={`w-full rounded-xl border px-3 py-2 text-left transition-all ${active ? 'bg-[#F7EEE8] border-[#D08C70]/40' : 'bg-white border-[#E6DED6]'}`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-black text-[#1A1A1A] flex items-center gap-1.5">{renderAccountIcon(acc.icon, acc.color)}{acc.name}</span>
+                              <span className="text-[10px] font-bold text-[#B7ADA4]">{projection.symbol}{acc.balance.toLocaleString()}</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between">
+                              {showDelta ? (
+                                <div className="flex items-center gap-1 text-[10px] font-bold" style={{ color: targetTone }}>
+                                  <LucideIcons.TrendingUp size={12} />
+                                  <span>+{projection.symbol}{projection.delta.toLocaleString()}</span>
+                                </div>
+                              ) : (
+                                <div />
+                              )}
+                              <span className="text-[10px] font-bold text-[#6B6661]">{projection.symbol}{projection.nextBalance.toLocaleString()}</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               )}
@@ -873,29 +887,85 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
         )}
       </div>
 
-      {type === 'expense' && (
-        <div className="rounded-xl border border-[#E6DED6] bg-[#FAF7F2] p-3 space-y-2">
-          <p className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest">目標池扣款（可選）</p>
-          <select
-            value={spendBucketId}
-            onChange={(e) => setSpendBucketId(e.target.value)}
-            className="h-10 w-full rounded-xl border border-[#E6DED6] bg-white px-3 text-xs font-bold outline-none"
-          >
-            <option value="">一般支出（不扣目標池）</option>
-            {expenseBuckets.map((bucket) => (
-              <option key={bucket.id} value={bucket.id}>
-                {bucket.name} · 可扣 ${bucket.spendable.toLocaleString()}
-              </option>
-            ))}
-          </select>
-          {spendBucketId && (
-            <p className="text-[10px] font-bold text-[#5B84B1]">
-              目前可扣：${selectedBucketSpendable.toLocaleString()}
-            </p>
-          )}
+      <div className="rounded-xl border border-[#E6DED6] bg-[#FAF7F2] p-3 space-y-2">
+        <div className="grid gap-2 md:grid-cols-2">
+          <div>
+            <p className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest mb-1">用途</p>
+            <button
+              type="button"
+              onClick={() => setPickerModal('scope')}
+              className="h-10 w-full rounded-xl border border-[#E6DED6] bg-white px-3 text-xs font-bold outline-none flex items-center justify-between"
+            >
+              <span>{scopes.find((s) => s.id === scopeId)?.name || '選擇用途'}</span>
+              <LucideIcons.ChevronDown size={14} className="text-[#B7ADA4]" />
+            </button>
+          </div>
+          {type === 'expense' ? (
+            <div>
+              <p className="text-[10px] font-black text-[#6B6661] uppercase tracking-widest mb-1">目標池扣款（可選）</p>
+              <button
+                type="button"
+                onClick={() => setPickerModal('bucket')}
+                className="h-10 w-full rounded-xl border border-[#E6DED6] bg-white px-3 text-xs font-bold outline-none flex items-center justify-between"
+              >
+                <span>
+                  {spendBucketId
+                    ? `${expenseBuckets.find((b) => b.id === spendBucketId)?.name || '目標池'} · 可扣 $${selectedBucketSpendable.toLocaleString()}`
+                    : '一般支出（不扣目標池）'}
+                </span>
+                <LucideIcons.ChevronDown size={14} className="text-[#B7ADA4]" />
+              </button>
+            </div>
+          ) : <div />}
+        </div>
+        {type === 'expense' && spendBucketId && (
+          <p className="text-[10px] font-bold text-[#5B84B1]">目前可扣：${selectedBucketSpendable.toLocaleString()}</p>
+        )}
+      </div>
+      {pickerModal && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setPickerModal(null)} />
+          <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
+              <h4 className="text-sm font-black text-[#1A1A1A]">{pickerModal === 'scope' ? '選擇用途' : '選擇目標池'}</h4>
+              <button onClick={() => setPickerModal(null)} className="text-[#B7ADA4] hover:text-[#1A1A1A]"><LucideIcons.X size={18} /></button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto p-2">
+              {pickerModal === 'scope' && scopes.map((scope) => (
+                <button
+                  key={scope.id}
+                  type="button"
+                  onClick={() => { setScopeId(scope.id); setPickerModal(null); }}
+                  className={`w-full text-left px-3 py-3 rounded-xl text-xs font-bold ${scopeId === scope.id ? 'bg-[#F7EEE8] text-[#D08C70] border border-[#D08C70]/40' : 'hover:bg-[#FAF7F2] text-[#1A1A1A]'}`}
+                >
+                  {scope.name}
+                </button>
+              ))}
+              {pickerModal === 'bucket' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => { setSpendBucketId(''); setPickerModal(null); }}
+                    className={`w-full text-left px-3 py-3 rounded-xl text-xs font-bold ${spendBucketId === '' ? 'bg-[#F7EEE8] text-[#D08C70] border border-[#D08C70]/40' : 'hover:bg-[#FAF7F2] text-[#1A1A1A]'}`}
+                  >
+                    一般支出（不扣目標池）
+                  </button>
+                  {expenseBuckets.map((bucket) => (
+                    <button
+                      key={bucket.id}
+                      type="button"
+                      onClick={() => { setSpendBucketId(bucket.id); setPickerModal(null); }}
+                      className={`w-full text-left px-3 py-3 rounded-xl text-xs font-bold ${spendBucketId === bucket.id ? 'bg-[#F7EEE8] text-[#D08C70] border border-[#D08C70]/40' : 'hover:bg-[#FAF7F2] text-[#1A1A1A]'}`}
+                    >
+                      {bucket.name} · 可扣 ${bucket.spendable.toLocaleString()}
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
         </div>
       )}
-
       <button type="submit" className="h-11 w-full rounded-xl text-white transition-colors flex items-center justify-center gap-1.5" style={{ backgroundColor: activeTone }}>
         {type === 'expense' && (
           <>
@@ -924,6 +994,30 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories, ac
 };
 
 export default TransactionForm;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

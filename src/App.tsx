@@ -1,8 +1,6 @@
 ﻿
 import React, { useEffect, useMemo, useState } from 'react';
-import CurrencyInput from 'react-currency-input-field';
-import { normalizeImeNumericRaw } from '../utils/numberInput';
-import { Home, Wallet, PieChart, Settings, Download, Upload, RefreshCw, Trash2, ChevronDown, PiggyBank } from 'lucide-react';
+import { Home, Wallet, PieChart, Settings, Download, Upload, RefreshCw, PiggyBank } from 'lucide-react';
 import TransactionForm from '../components/TransactionForm';
 import TransactionList from '../components/TransactionList';
 import Dashboard from '../components/Dashboard';
@@ -10,9 +8,11 @@ import CategoryManager from '../components/CategoryManager';
 import AccountManager from '../components/AccountManager';
 import Analysis from '../components/Analysis';
 import SavingAssistant from '../components/SavingAssistant';
+import ScopeManager from '../components/ScopeManager';
+import BudgetManager from '../components/BudgetManager';
 import { canUse, getBucketLimit } from '../services/featureGate';
 import { buildAutoAllocations, getAvailableByAccount, getBucketAccountSpendable, getBucketTotals, getReservedByAccount } from '../services/savingAllocator';
-import { Transaction, Account, Category, DisplayRange, PlanTier, SavingBucket, BucketAllocation, BucketSpend, IncomeAllocationRule, DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS, SUPPORTED_CURRENCIES } from '../types';
+import { Transaction, Account, Category, DisplayRange, PlanTier, SavingBucket, BucketAllocation, BucketSpend, IncomeAllocationRule, SpendingScope, BudgetItem, DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS, DEFAULT_SCOPES } from '../types';
 import { AppStorageData, clearAppStorage, loadAppStorage, saveAppStorage } from '../services/appStorage';
 
 const App: React.FC = () => {
@@ -20,7 +20,8 @@ const App: React.FC = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>(DEFAULT_ACCOUNTS);
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
-  const [budgets, setBudgets] = useState<Record<string, number>>({ TWD: 15000 });
+  const [scopes, setScopes] = useState<SpendingScope[]>(DEFAULT_SCOPES);
+  const [budgets, setBudgets] = useState<BudgetItem[]>([{ id: 'budget_TWD', name: '每月預算', currencyCode: 'TWD', amount: 15000, period: 'month', scopeIds: ['all'] }]);
   const [planTier, setPlanTier] = useState<PlanTier>('mvp');
   const [savingBuckets, setSavingBuckets] = useState<SavingBucket[]>([]);
   const [bucketAllocations, setBucketAllocations] = useState<BucketAllocation[]>([]);
@@ -30,8 +31,6 @@ const App: React.FC = () => {
   // Date Filter State
   const [displayRange, setDisplayRange] = useState<DisplayRange>('month');
   
-  // UI State for deletions in App.tsx
-  const [budgetDeleteConfirm, setBudgetDeleteConfirm] = useState<string | null>(null);
   const [storageReady, setStorageReady] = useState(false);
 
   // Helper to get local date string YYYY-MM-DD
@@ -42,6 +41,39 @@ const App: React.FC = () => {
     return `${year}-${month}-${day}`;
   };
 
+
+  const normalizeBudgetItems = (raw: unknown): BudgetItem[] => {
+    if (Array.isArray(raw)) {
+      return raw
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        .map((item) => ({
+          id: typeof item.id === 'string' && item.id ? item.id : `budget_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : '每月預算',
+          currencyCode: typeof item.currencyCode === 'string' && item.currencyCode ? item.currencyCode : 'TWD',
+          amount: Number.isFinite(Number(item.amount)) ? Math.max(0, Number(item.amount)) : 0,
+          period: item.period === 'week' || item.period === 'year' ? item.period : 'month',
+          scopeIds:
+            Array.isArray(item.scopeIds) && item.scopeIds.length
+              ? (item.scopeIds.filter((id) => id === 'all' || typeof id === 'string') as Array<'all' | string>)
+              : item.scopeId === 'all' || typeof item.scopeId === 'string'
+                ? [item.scopeId as 'all' | string]
+                : ['all'],
+        }));
+    }
+
+    if (raw && typeof raw === 'object') {
+      return Object.entries(raw as Record<string, unknown>).map(([currencyCode, amount]) => ({
+        id: `budget_${currencyCode}`,
+        name: '每月預算',
+        currencyCode,
+        amount: Number.isFinite(Number(amount)) ? Math.max(0, Number(amount)) : 0,
+        period: 'month',
+        scopeIds: ['all'],
+      }));
+    }
+
+    return [];
+  };
   const [customStart, setCustomStart] = useState(() => {
     const now = new Date();
     return getLocalDateString(new Date(now.getFullYear(), now.getMonth(), 1));
@@ -51,8 +83,6 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'home' | 'accounts' | 'jar' | 'charts' | 'settings'>('home');
   const [searchQuery, setSearchQuery] = useState('');
   
-  // Budget UI state
-  const [newBudgetCurrency, setNewBudgetCurrency] = useState('USD');
   const bucketLimit = getBucketLimit(planTier);
   const canUseAutoRules = canUse('auto_income_rules', planTier);
 
@@ -81,7 +111,8 @@ const App: React.FC = () => {
         transactions: [],
         accounts: DEFAULT_ACCOUNTS,
         categories: DEFAULT_CATEGORIES,
-        budgets: { TWD: 15000 },
+        scopes: DEFAULT_SCOPES,
+        budgets: [{ id: 'budget_TWD', name: '每月預算', currencyCode: 'TWD', amount: 15000, period: 'month', scopeIds: ['all'] }],
         displayRange: 'month',
         planTier: 'mvp',
         savingBuckets: [],
@@ -96,7 +127,8 @@ const App: React.FC = () => {
         setTransactions(loaded.transactions);
         setAccounts(loaded.accounts);
         setCategories(loaded.categories);
-        setBudgets(loaded.budgets);
+        setScopes(loaded.scopes);
+        setBudgets(normalizeBudgetItems(loaded.budgets));
         setDisplayRange(loaded.displayRange);
         setPlanTier(loaded.planTier);
         setSavingBuckets(loaded.savingBuckets);
@@ -123,6 +155,7 @@ const App: React.FC = () => {
       transactions,
       accounts,
       categories,
+      scopes,
       budgets,
       displayRange,
       planTier,
@@ -131,7 +164,7 @@ const App: React.FC = () => {
       bucketSpends,
       incomeRules,
     });
-  }, [storageReady, transactions, accounts, categories, budgets, displayRange, planTier, savingBuckets, bucketAllocations, bucketSpends, incomeRules]);
+  }, [storageReady, transactions, accounts, categories, scopes, budgets, displayRange, planTier, savingBuckets, bucketAllocations, bucketSpends, incomeRules]);
 
   const addManualBucketAllocation = (bucketId: string, accountId: string, amount: number) => {
     if (!savingBuckets.some((b) => b.id === bucketId) || !accounts.some((a) => a.id === accountId)) return;
@@ -290,6 +323,13 @@ const App: React.FC = () => {
     if (!id) return;
     setCategories(prev => prev.filter(c => c.id !== id));
   };
+  const handleDeleteScope = (id: string) => {
+    if (!id || id === 'scope_personal') return;
+    setScopes((prev) => prev.filter((s) => s.id !== id));
+    setTransactions((prev) =>
+      prev.map((tx) => (tx.scopeId === id ? { ...tx, scopeId: 'scope_personal' } : tx))
+    );
+  };
 
   const handleUpdateTransaction = (updatedTx: Transaction) => {
     const oldTx = transactions.find((t) => t.id === updatedTx.id);
@@ -418,33 +458,12 @@ const App: React.FC = () => {
     setIncomeRules((prev) => prev.filter((rule) => rule.id !== ruleId));
   };
 
-  const handleAddBudget = () => {
-    if (budgets[newBudgetCurrency] !== undefined) return;
-    setBudgets(prev => ({ ...prev, [newBudgetCurrency]: 0 }));
-  };
-
-  const handleDeleteBudget = (currency: string) => {
-    const next = { ...budgets };
-    delete next[currency];
-    setBudgets(next);
-  };
-  
-  // 預算刪除：二次確認
-  const handleBudgetDeleteClick = (code: string) => {
-    if (budgetDeleteConfirm === code) {
-      handleDeleteBudget(code);
-      setBudgetDeleteConfirm(null);
-    } else {
-      setBudgetDeleteConfirm(code);
-      setTimeout(() => setBudgetDeleteConfirm(prev => prev === code ? null : prev), 3000);
-    }
-  };
-
   const handleExportData = () => {
     const data = {
       transactions,
       accounts,
       categories,
+      scopes,
       budgets,
       planTier,
       savingBuckets,
@@ -475,7 +494,8 @@ const App: React.FC = () => {
           setTransactions(data.transactions);
           setAccounts(data.accounts);
           if (data.categories) setCategories(data.categories);
-          if (data.budgets) setBudgets(data.budgets);
+          if (Array.isArray(data.scopes)) setScopes(data.scopes);
+          if (data.budgets) setBudgets(normalizeBudgetItems(data.budgets));
           if (data.planTier) setPlanTier(data.planTier);
           if (data.savingBuckets) setSavingBuckets(data.savingBuckets);
           if (data.bucketAllocations) setBucketAllocations(data.bucketAllocations);
@@ -523,7 +543,6 @@ const App: React.FC = () => {
     const q = searchQuery.toLowerCase().trim();
     return q ? list.filter(t => t.description.toLowerCase().includes(q) || t.category.toLowerCase().includes(q)) : list;
   }, [transactions, searchQuery, displayRange, customStart, customEnd]);
-
   const navItems = [
     { id: 'home', icon: Home, label: '首頁' },
     { id: 'accounts', icon: Wallet, label: '帳戶' },
@@ -551,6 +570,7 @@ const App: React.FC = () => {
             <TransactionForm
               onAdd={handleAddTransaction}
               categories={categories}
+              scopes={scopes}
               accounts={accounts}
               savingBuckets={savingBuckets}
               bucketSpendableByAccount={bucketSpendableByAccount}
@@ -558,9 +578,11 @@ const App: React.FC = () => {
             
             <Dashboard 
               transactions={filteredTransactions} 
+              allTransactions={transactions}
               accounts={accounts} 
               budgets={budgets} 
               categories={categories}
+              scopes={scopes}
               displayRange={displayRange}
               setDisplayRange={setDisplayRange}
               customStart={customStart}
@@ -579,6 +601,7 @@ const App: React.FC = () => {
               onDelete={handleDeleteTransaction} 
               onUpdate={handleUpdateTransaction} 
               categories={categories} 
+              scopes={scopes}
               accounts={accounts} 
               savingBuckets={savingBuckets}
             />
@@ -589,6 +612,9 @@ const App: React.FC = () => {
             accounts={accounts} 
             reservedByAccount={reservedByAccount}
             availableByAccount={availableByAccount}
+            transactions={transactions}
+            categories={categories}
+            scopes={scopes}
             onUpdate={setAccounts} 
             onDelete={handleDeleteAccount} 
           />
@@ -611,7 +637,7 @@ const App: React.FC = () => {
             onDeleteIncomeRule={handleDeleteIncomeRule}
           />
         )}
-        {activeTab === 'charts' && <Analysis transactions={transactions} categories={categories} />}
+        {activeTab === 'charts' && <Analysis transactions={transactions} categories={categories} scopes={scopes} accounts={accounts} />}
         {activeTab === 'settings' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2">
              <div className="custom-card p-6 md:p-8 rounded-[2.5rem]">
@@ -636,112 +662,17 @@ const App: React.FC = () => {
                <p className="text-[10px] font-bold text-[#B7ADA4] mt-3">目前為本機開關，正式上架時可改為後端訂閱權限。</p>
              </div>
 
-             {/* Redesigned Budget Settings */}
-             <div className="custom-card p-6 md:p-8 rounded-[2.5rem] mb-12 space-y-8">
-               <div className="flex items-center justify-between">
-                 <h3 className="font-extrabold text-[#1A1A1A] text-base flex items-center gap-2">
-                    <span className="w-1.5 h-6 bg-[#D08C70] rounded-full"></span>
-                    預算管理
-                 </h3>
-               </div>
-               
-               <div className="space-y-4">
-                 <div className="flex items-center gap-2 px-1">
-                   <div className="w-1.5 h-4 rounded-full bg-[#1A1A1A]"></div>
-                   <h4 className="text-[11px] font-black text-[#6B6661] uppercase tracking-[0.2em]">現有預算</h4>
-                 </div>
-                 
-                 <div className="space-y-4">
-                   {Object.entries(budgets).map(([code, amount]) => {
-                      const currency = SUPPORTED_CURRENCIES.find(c => c.code === code);
-                      const isConfirming = budgetDeleteConfirm === code;
-
-                      return (
-                        <div key={code} className="custom-card p-6 rounded-[2.5rem] flex justify-between items-center bg-white group hover:border-[#D08C70]/30 transition-all border border-transparent">
-                          <div className="flex-1">
-                               {/* Title synced with currency name */}
-                               <h4 className="font-black text-[#1A1A1A] text-lg flex items-center gap-2 mb-1">
-                                 {currency?.name || code}
-                               </h4>
-                               <div className="flex items-center">
-                                 <span className="text-xl font-black text-[#1A1A1A] mr-1 tracking-tighter">{currency?.symbol}</span>
-                                   <CurrencyInput
-                                      inputMode="numeric"
-                                      value={amount}
-                                      groupSeparator=","
-                                      allowNegativeValue={false}
-                                      decimalsLimit={0}
-                                      transformRawValue={normalizeImeNumericRaw}
-                                      onValueChange={(value) => {
-                                       const num = parseFloat(value || '0');
-                                       setBudgets(prev => ({ ...prev, [code]: Number.isFinite(num) ? num : 0 }));
-                                     }}
-                                     className="w-full bg-transparent font-black text-xl text-[#1A1A1A] outline-none tracking-tighter placeholder:text-[#E6DED6]"
-                                   />
-                               </div>
-                          </div>
-                          
-                          {/* Unified Delete Button Style */}
-                          <button 
-                            onClick={() => handleBudgetDeleteClick(code)} 
-                            className={`flex items-center justify-center transition-all rounded-xl ${
-                              isConfirming 
-                                ? 'bg-red-500 text-white px-3 py-2 shadow-md scale-105' 
-                                : 'text-[#B7ADA4] hover:text-red-500 hover:bg-red-50 p-3'
-                            }`}
-                            title={isConfirming ? "再次點擊確認刪除" : "刪除預算"}
-                          >
-                            {isConfirming ? (
-                              <span className="text-[10px] font-black whitespace-nowrap">確認刪除</span>
-                            ) : (
-                              <Trash2 size={20} />
-                            )}
-                          </button>
-                        </div>
-                      );
-                   })}
-                   {Object.keys(budgets).length === 0 && (
-                     <div className="col-span-full p-6 text-center text-[#B7ADA4] text-xs font-bold bg-[#FAF7F2] rounded-2xl border border-dashed border-[#E6DED6]">
-                       目前沒有任何預算項目
-                     </div>
-                   )}
-                 </div>
-               </div>
-
-               <div className="p-5 bg-[#FAF7F2] rounded-[2rem] border-2 border-[#E6DED6] space-y-4">
-                  <h4 className="text-[10px] font-black text-[#D08C70] uppercase tracking-widest px-1">新增預算幣別</h4>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <select 
-                        value={newBudgetCurrency} 
-                        onChange={e => setNewBudgetCurrency(e.target.value)}
-                        className="w-full px-4 py-3 rounded-xl border border-[#E6DED6] bg-white outline-none font-bold text-xs text-[#1A1A1A] appearance-none"
-                      >
-                        {SUPPORTED_CURRENCIES.filter(c => budgets[c.code] === undefined).map(c => (
-                          <option key={c.code} value={c.code}>{c.name}</option>
-                        ))}
-                      </select>
-                      {/* Dropdown Icon */}
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#B7ADA4]">
-                        <ChevronDown size={18} strokeWidth={2.5} />
-                      </div>
-                    </div>
-                    <button 
-                      onClick={handleAddBudget}
-                      disabled={SUPPORTED_CURRENCIES.every(c => budgets[c.code] !== undefined)}
-                      className="px-5 bg-[#1A1A1A] text-white rounded-xl text-[10px] font-black uppercase disabled:opacity-50 whitespace-nowrap shadow-lg tap-active"
-                    >
-                      新增
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-[#B7ADA4] font-bold pl-1">可為每種幣別設定預算。</p>
-               </div>
-             </div>
+             <BudgetManager budgets={budgets} scopes={scopes} onChange={setBudgets} />
 
              <CategoryManager 
                categories={categories} 
                onUpdateCategories={setCategories} 
                onDelete={handleDeleteCategory} // Pass the delete handler
+             />
+             <ScopeManager
+               scopes={scopes}
+               onUpdateScopes={setScopes}
+               onDelete={handleDeleteScope}
              />
              
              <div className="custom-card p-6 md:p-8 rounded-[2.5rem] mb-12">
@@ -790,6 +721,25 @@ const App: React.FC = () => {
 };
 
 export default App;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

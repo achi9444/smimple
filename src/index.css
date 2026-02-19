@@ -32,3 +32,35 @@ body {
   padding-bottom: calc(6rem + var(--safe-bottom));
 }
 
+
+.analysis-view,
+.analysis-view * {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.analysis-view .recharts-wrapper:focus,
+.analysis-view .recharts-wrapper:focus-visible,
+.analysis-view .recharts-surface:focus,
+.analysis-view .recharts-layer:focus,
+.analysis-view .recharts-sector:focus,
+.analysis-view svg:focus,
+.analysis-view svg *:focus {
+  outline: none !important;
+}
+
+
+.recharts-wrapper,
+.recharts-surface {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.recharts-wrapper:focus,
+.recharts-wrapper:focus-visible,
+.recharts-surface:focus,
+.recharts-layer:focus,
+.recharts-sector:focus,
+.recharts-dot:focus,
+.recharts-rectangle:focus {
+  outline: none !important;
+}
+

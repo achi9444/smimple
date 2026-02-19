@@ -9,7 +9,7 @@ export interface Currency {
 }
 
 export const SUPPORTED_CURRENCIES: Currency[] = [
-  { code: 'TWD', symbol: '$', name: '新台幣 (TWD)' },
+  { code: 'TWD', symbol: '$', name: '新臺幣 (TWD)' },
   { code: 'USD', symbol: '$', name: '美元 (USD)' },
   { code: 'JPY', symbol: '¥', name: '日圓 (JPY)' },
   { code: 'EUR', symbol: '€', name: '歐元 (EUR)' },
@@ -30,6 +30,8 @@ export interface Account {
   currencyCode: string;
   color: string;
   icon: string;
+  isDisabled?: boolean;
+  isArchived?: boolean;
 }
 
 export interface SpendingScope {
@@ -37,6 +39,15 @@ export interface SpendingScope {
   name: string;
   color: string;
   isSystem?: boolean;
+}
+
+export interface BudgetItem {
+  id: string;
+  name: string;
+  currencyCode: string;
+  amount: number;
+  period: 'week' | 'month' | 'year';
+  scopeIds: Array<'all' | string>;
 }
 
 export interface Transaction {
@@ -117,6 +128,8 @@ export const DEFAULT_CATEGORIES: Category[] = [
 ];
 
 export const DEFAULT_ACCOUNTS: Account[] = [
-  { id: 'acc_cash', name: '現金', balance: 0, currencyCode: 'TWD', color: '#D08C70', icon: 'Wallet' },
-  { id: 'acc_bank', name: '銀行帳戶', balance: 0, currencyCode: 'TWD', color: '#8FB996', icon: 'CreditCard' },
+  { id: 'acc_cash', name: '現金', balance: 0, currencyCode: 'TWD', color: '#D08C70', icon: 'Wallet', isDisabled: false, isArchived: false },
+  { id: 'acc_bank', name: '銀行帳戶', balance: 0, currencyCode: 'TWD', color: '#8FB996', icon: 'CreditCard', isDisabled: false, isArchived: false },
 ];
+
+

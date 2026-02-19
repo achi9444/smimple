@@ -1,14 +1,16 @@
-﻿import React, { useMemo, useState } from 'react';
-import { ChevronDown, Calendar } from 'lucide-react';
-import type { Account, Category, DisplayRange, Transaction } from '../types';
+﻿import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { ChevronDown, Calendar, Sparkles, X } from 'lucide-react';
+import type { Account, BudgetItem, Category, DisplayRange, SpendingScope, Transaction } from '../types';
 import { SUPPORTED_CURRENCIES } from '../types';
 import { getFinancialAdvice } from '../services/geminiService';
 
 interface DashboardProps {
   transactions: Transaction[];
+  allTransactions: Transaction[];
   accounts: Account[];
-  budgets: Record<string, number>;
+  budgets: BudgetItem[];
   categories: Category[];
+  scopes: SpendingScope[];
   displayRange: DisplayRange;
   setDisplayRange: (range: DisplayRange) => void;
   customStart: string;
@@ -19,8 +21,9 @@ interface DashboardProps {
 
 const Dashboard: React.FC<DashboardProps> = ({
   transactions,
-  accounts,
+  allTransactions,
   budgets,
+  scopes,
   displayRange,
   setDisplayRange,
   customStart,
@@ -31,21 +34,29 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [advice, setAdvice] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showDateMenu, setShowDateMenu] = useState(false);
+  const [showAdviceModal, setShowAdviceModal] = useState(false);
+  const adviceCacheRef = useRef<{ key: string; text: string } | null>(null);
 
-  const expensesByCurrency = useMemo(() => {
-    const totals: Record<string, number> = {};
-    transactions.filter((t) => t.type === 'expense').forEach((t) => {
-      totals[t.currencyCode] = (totals[t.currencyCode] || 0) + t.amount;
+  const scopeMap = useMemo(() => {
+    const m: Record<string, string> = { all: '全部用途', scope_personal: '個人' };
+    scopes.forEach((s) => {
+      m[s.id] = s.name;
     });
-    return totals;
-  }, [transactions]);
+    return m;
+  }, [scopes]);
+
+  const periodLabel = useMemo(
+    () => ({ week: '每週', month: '每月', year: '每年' } as const),
+    []
+  );
 
   const periodStats = useMemo(() => {
     let income = 0;
     let expense = 0;
 
     const codes = transactions.map((t) => t.currencyCode);
-    const dominant = codes.sort((a, b) => codes.filter((v) => v === a).length - codes.filter((v) => v === b).length).pop() || 'TWD';
+    const dominant =
+      codes.sort((a, b) => codes.filter((v) => v === a).length - codes.filter((v) => v === b).length).pop() || 'TWD';
     const symbol = SUPPORTED_CURRENCIES.find((c) => c.code === dominant)?.symbol || '$';
 
     transactions.forEach((t) => {
@@ -58,21 +69,123 @@ const Dashboard: React.FC<DashboardProps> = ({
     return { income, expense, net: income - expense, symbol, code: dominant };
   }, [transactions]);
 
+  const getPeriodRange = (period: BudgetItem['period']) => {
+    const now = new Date();
+    const start = new Date(now);
+    const end = new Date(now);
+
+    if (period === 'week') {
+      const day = now.getDay();
+      const diff = day === 0 ? 6 : day - 1;
+      start.setDate(now.getDate() - diff);
+      start.setHours(0, 0, 0, 0);
+      end.setTime(start.getTime());
+      end.setDate(start.getDate() + 6);
+      end.setHours(23, 59, 59, 999);
+      return { start, end };
+    }
+
+    if (period === 'year') {
+      start.setMonth(0, 1);
+      start.setHours(0, 0, 0, 0);
+      end.setMonth(11, 31);
+      end.setHours(23, 59, 59, 999);
+      return { start, end };
+    }
+
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    end.setMonth(now.getMonth() + 1, 0);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  };
+
   const budgetInfo = useMemo(() => {
-    return Object.entries(budgets).map(([code, limit]) => {
-      const expense = expensesByCurrency[code] || 0;
-      const progress = limit > 0 ? Math.min((expense / limit) * 100, 100) : 0;
-      const currency = SUPPORTED_CURRENCIES.find((c) => c.code === code);
-      return { code, limit, expense, progress, isOver: expense > limit, symbol: currency?.symbol || '$' };
+    return budgets.map((budget) => {
+      const scopeIds = budget.scopeIds?.length ? budget.scopeIds : ['all'];
+      const { start, end } = getPeriodRange(budget.period || 'month');
+
+      const expense = allTransactions
+        .filter((t) => t.type === 'expense' && t.currencyCode === budget.currencyCode)
+        .filter((t) => {
+          const txDate = new Date(t.date);
+          return txDate >= start && txDate <= end;
+        })
+        .filter((t) => {
+          if (scopeIds.includes('all')) return true;
+          const txScope = t.scopeId || 'scope_personal';
+          return scopeIds.includes(txScope);
+        })
+        .reduce((sum, t) => sum + t.amount, 0);
+
+      const progress = budget.amount > 0 ? Math.min((expense / budget.amount) * 100, 100) : 0;
+      const currency = SUPPORTED_CURRENCIES.find((c) => c.code === budget.currencyCode);
+      const scopeSummary =
+        scopeIds.includes('all')
+          ? '全部用途'
+          : scopeIds.map((id) => scopeMap[id] || id).join('、');
+
+      return {
+        ...budget,
+        expense,
+        progress,
+        isOver: expense > budget.amount,
+        symbol: currency?.symbol || '$',
+        scopeSummary,
+      };
     });
-  }, [budgets, expensesByCurrency]);
+  }, [allTransactions, budgets, scopeMap]);
+
+  const getCurrentAdvice = useCallback(async () => {
+    const expenseTransactions = transactions.filter((tx) => tx.type === 'expense');
+    const expenseCurrencyCount = expenseTransactions.reduce((acc, tx) => {
+      acc[tx.currencyCode] = (acc[tx.currencyCode] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    const currencyEntries = Object.entries(expenseCurrencyCount) as Array<[string, number]>;
+    const dominantExpenseCode = currencyEntries.sort((a, b) => b[1] - a[1])[0]?.[0] || periodStats.code;
+
+    const dominantBudget = budgetInfo
+      .filter((b) => b.currencyCode === dominantExpenseCode)
+      .reduce((sum, b) => sum + b.amount, 0);
+
+    const budgetContexts = budgetInfo.map((b) => ({
+      name: b.name,
+      currencyCode: b.currencyCode,
+      amount: b.amount,
+      expense: b.expense,
+      progress: b.progress,
+      isOver: b.isOver,
+      scopeNames: b.scopeSummary,
+      scopeIds: b.scopeIds,
+      period: b.period,
+    }));
+
+    const cacheKey = JSON.stringify({
+      tx: expenseTransactions.map((tx) => [tx.id, tx.amount, tx.category, tx.scopeId || 'scope_personal', tx.currencyCode]),
+      budgets: budgetContexts.map((b) => [b.name, b.currencyCode, b.amount, Math.round(b.expense), Math.round(b.progress), b.scopeIds.join(','), b.period]),
+      dominantBudget,
+    });
+
+    if (adviceCacheRef.current?.key === cacheKey) {
+      setAdvice(adviceCacheRef.current.text);
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      const result = await getFinancialAdvice(expenseTransactions, dominantBudget, budgetContexts);
+      adviceCacheRef.current = { key: cacheKey, text: result };
+      setAdvice(result);
+    } catch {
+      setAdvice('目前無法分析，請稍後再試。');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [budgetInfo, periodStats.code, transactions]);
 
   const handleGetAdvice = async () => {
-    setIsAnalyzing(true);
-    const mainBudget = budgetInfo[0]?.limit || 15000;
-    const result = await getFinancialAdvice(transactions, mainBudget);
-    setAdvice(result);
-    setIsAnalyzing(false);
+    await getCurrentAdvice();
   };
 
   const getRangeLabel = () => {
@@ -147,10 +260,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                 <div className="w-1.5 h-1.5 rounded-full bg-[#729B79]"></div>
                 <span className="text-xs font-black text-[#B7ADA4]">收入</span>
               </div>
-              <span className="text-lg font-black text-[#729B79]">
-                {periodStats.symbol}
-                {periodStats.income.toLocaleString()}
-              </span>
+              <span className="text-lg font-black text-[#729B79]">{periodStats.symbol}{periodStats.income.toLocaleString()}</span>
             </div>
 
             <div className="flex justify-between items-center">
@@ -158,10 +268,7 @@ const Dashboard: React.FC<DashboardProps> = ({
                 <div className="w-1.5 h-1.5 rounded-full bg-[#D66D5B]"></div>
                 <span className="text-xs font-black text-[#B7ADA4]">支出</span>
               </div>
-              <span className="text-lg font-black text-[#D66D5B]">
-                {periodStats.symbol}
-                {periodStats.expense.toLocaleString()}
-              </span>
+              <span className="text-lg font-black text-[#D66D5B]">{periodStats.symbol}{periodStats.expense.toLocaleString()}</span>
             </div>
           </div>
         </div>
@@ -170,14 +277,14 @@ const Dashboard: React.FC<DashboardProps> = ({
       {budgetInfo.length > 0 && (
         <div className="space-y-4">
           {budgetInfo.map((info) => (
-            <div key={info.code} className="custom-card p-6 rounded-[2rem] overflow-hidden relative">
-              <div className="flex justify-between items-end mb-4">
+            <div key={info.id} className="custom-card p-6 rounded-[2rem] overflow-hidden relative">
+              <div className="flex justify-between items-end mb-4 gap-3">
                 <div>
-                  <p className="text-[9px] font-extrabold text-[#D08C70] uppercase tracking-widest mb-1">{info.code} 預算進度</p>
+                  <p className="text-[9px] font-extrabold text-[#D08C70] uppercase tracking-widest mb-1">{info.name}</p>
                   <h2 className="text-2xl font-black text-[#1A1A1A]">
-                    {info.symbol}
-                    {info.expense.toLocaleString()} <span className="text-xs font-bold text-[#B7ADA4]">/ {info.symbol}{info.limit.toLocaleString()}</span>
+                    {info.symbol}{info.expense.toLocaleString()} <span className="text-xs font-bold text-[#B7ADA4]">/ {info.symbol}{info.amount.toLocaleString()}</span>
                   </h2>
+                  <p className="text-[10px] font-black text-[#B7ADA4] mt-1">{periodLabel[info.period]} · {info.scopeSummary} · {info.currencyCode}</p>
                 </div>
                 <div className={`text-[10px] font-black px-3 py-1 rounded-full ${info.isOver ? 'bg-red-100 text-red-500' : 'bg-green-100 text-green-600'}`}>
                   {info.isOver ? '超支' : `${Math.round(info.progress)}%`}
@@ -191,22 +298,37 @@ const Dashboard: React.FC<DashboardProps> = ({
         </div>
       )}
 
-      <div className="custom-card p-8 rounded-[2.5rem] flex flex-col justify-between">
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-2xl">AI</span>
-            <h3 className="font-extrabold text-[10px] text-[#D08C70] uppercase tracking-widest">AI 理財建議</h3>
+      <button
+        type="button"
+        onClick={() => setShowAdviceModal(true)}
+        className="fixed right-5 bottom-[calc(3.4rem+env(safe-area-inset-bottom))] z-[45] h-12 w-12 rounded-full bg-[#1A1A1A] text-white shadow-2xl flex items-center justify-center"
+        title="AI 理財分析"
+      >
+        <Sparkles size={18} />
+      </button>
+
+      {showAdviceModal && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 pt-safe pb-safe">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowAdviceModal(false)} />
+          <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
+              <h3 className="font-extrabold text-sm text-[#1A1A1A] flex items-center gap-2"><Sparkles size={16} className="text-[#D08C70]" />AI 理財建議</h3>
+              <button onClick={() => setShowAdviceModal(false)} className="text-[#B7ADA4] hover:text-[#1A1A1A]"><X size={18} /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-[13px] font-bold text-[#1A1A1A] whitespace-pre-line min-h-[78px]">
+                {advice || '點下方按鈕，取得 AI 分析後的理財建議。'}
+              </p>
+              <button onClick={handleGetAdvice} disabled={isAnalyzing} className="w-full h-11 rounded-xl bg-[#1A1A1A] text-white text-xs font-black">
+                {isAnalyzing ? '分析中...' : '重新分析'}
+              </button>
+            </div>
           </div>
-          <p className="text-[13px] font-bold text-[#1A1A1A] opacity-90 leading-relaxed min-h-[60px]">
-            {advice || '點擊下方按鈕，取得 AI 分析後的理財建議。'}
-          </p>
         </div>
-        <button onClick={handleGetAdvice} disabled={isAnalyzing} className="mt-6 w-full py-3 rounded-2xl border-2 border-[#D08C70] text-[#D08C70] font-extrabold text-[10px] uppercase tracking-widest hover:bg-[#D08C70] hover:text-white transition-all tap-active">
-          {isAnalyzing ? '分析中...' : '取得 AI 建議'}
-        </button>
-      </div>
+      )}
     </div>
   );
 };
 
 export default Dashboard;
+
