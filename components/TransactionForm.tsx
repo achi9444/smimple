@@ -313,20 +313,25 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
       symbol: getCurrencySymbol(account.currencyCode),
     };
   };
+  const bucketSpendableById = useMemo(() => {
+    const totals: Record<string, number> = {};
+    Object.entries(bucketSpendableByAccount).forEach(([key, value]) => {
+      const [bucketId] = key.split('::');
+      if (!bucketId) return;
+      totals[bucketId] = (totals[bucketId] || 0) + (Number(value) || 0);
+    });
+    return totals;
+  }, [bucketSpendableByAccount]);
+
   const expenseBuckets = useMemo(() => {
     if (type !== 'expense') return [];
-    return savingBuckets
-      .map((bucket) => {
-        const key = `${bucket.id}::${accountId}`;
-        const spendable = bucketSpendableByAccount[key] || 0;
-        return { ...bucket, spendable };
-      })
-      ;
-  }, [type, savingBuckets, accountId, bucketSpendableByAccount]);
+    return savingBuckets.map((bucket) => ({ ...bucket, spendable: bucketSpendableById[bucket.id] || 0 }));
+  }, [type, savingBuckets, bucketSpendableById]);
+
   const selectedBucketSpendable = useMemo(() => {
     if (!spendBucketId) return 0;
-    return bucketSpendableByAccount[`${spendBucketId}::${accountId}`] || 0;
-  }, [spendBucketId, accountId, bucketSpendableByAccount]);
+    return bucketSpendableById[spendBucketId] || 0;
+  }, [spendBucketId, bucketSpendableById]);
 
   React.useEffect(() => {
     if (!filteredCategories.some((c) => c.name === category)) {
@@ -586,10 +591,10 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
   }
 
   return (
-    <form onSubmit={handleSubmit} className="relative z-40 mb-6 rounded-3xl border border-[#E6DED6] bg-white p-4 space-y-3">
+    <form onSubmit={handleSubmit} className="relative mb-6 rounded-3xl border border-[#E6DED6] bg-white p-4 space-y-3">
       <div className="rounded-2xl bg-[#1A1A1A] p-3 text-white space-y-2">
         <label className="block text-[10px] font-black uppercase tracking-widest text-[#D08C70]">AI 記帳輸入</label>
-        <div className="flex gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_76px] items-center gap-2">
           <input
             type="text"
             value={aiInput}
@@ -607,7 +612,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
             type="button"
             onClick={() => void handleAiParse()}
             disabled={isAnalyzing || !aiInput.trim()}
-            className="rounded-xl bg-[#D08C70] px-4 text-[10px] font-black uppercase tracking-widest text-white disabled:opacity-50"
+            className="h-10 w-full rounded-xl bg-[#D08C70] px-2 text-[12px] font-black text-white whitespace-nowrap overflow-hidden text-ellipsis leading-none flex items-center justify-center disabled:opacity-50"
           >
             {isAnalyzing ? '分析中' : '解析'}
           </button>
@@ -723,7 +728,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
               </button>
             )}
             {sourceAccountMenuOpen && (
-              <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+              <div className="fixed inset-0 z-[98] flex items-center justify-center p-4">
                 <div className="absolute inset-0 bg-black/40" onClick={() => setSourceAccountMenuOpen(false)} />
                 <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl overflow-hidden">
                   <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
@@ -813,7 +818,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
                 </button>
               )}
               {targetAccountMenuOpen && (
-                <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+                <div className="fixed inset-0 z-[98] flex items-center justify-center p-4">
                   <div className="absolute inset-0 bg-black/40" onClick={() => setTargetAccountMenuOpen(false)} />
                   <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl overflow-hidden">
                     <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
@@ -923,7 +928,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
         )}
       </div>
       {pickerModal && (
-        <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[98] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40" onClick={() => setPickerModal(null)} />
           <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
@@ -994,6 +999,14 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
 };
 
 export default TransactionForm;
+
+
+
+
+
+
+
+
 
 
 

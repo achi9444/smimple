@@ -192,16 +192,15 @@ const App: React.FC = () => {
     setBucketSpends((prev) => prev.filter((s) => s.linkedTransactionId !== transactionId));
   };
 
-  const getBucketSpendableAmount = (bucketId: string, accountId: string) => {
-    const key = `${bucketId}::${accountId}`;
-    return bucketSpendableByAccount[key] || 0;
+  const getBucketSpendableAmount = (bucketId: string) => {
+    return bucketTotals[bucketId] || 0;
   };
 
   // --- Core Logic: Add ---
 
   const handleAddTransaction = (newTx: Omit<Transaction, 'id'>) => {
     if (newTx.type === 'expense' && newTx.bucketId) {
-      const spendable = getBucketSpendableAmount(newTx.bucketId, newTx.accountId);
+      const spendable = getBucketSpendableAmount(newTx.bucketId);
       if (spendable < newTx.amount) {
         console.warn('Bucket has insufficient balance for this expense.');
         return;
@@ -378,7 +377,7 @@ const App: React.FC = () => {
         oldTx.type === 'expense' &&
         oldTx.bucketId === updatedTx.bucketId &&
         oldTx.accountId === updatedTx.accountId;
-      const spendable = getBucketSpendableAmount(updatedTx.bucketId, updatedTx.accountId) + (isSameBucketAccount ? oldTx.amount : 0);
+      const spendable = getBucketSpendableAmount(updatedTx.bucketId) + (isSameBucketAccount ? oldTx.amount : 0);
       if (spendable >= updatedTx.amount) {
         setBucketSpends((prev) => [
           ...prev,
@@ -721,6 +720,11 @@ const App: React.FC = () => {
 };
 
 export default App;
+
+
+
+
+
 
 
 
