@@ -133,6 +133,59 @@ const findAccountMentionsInText = (text: string, accounts: string[]) => {
 const findBestAccountMatch = (text: string, accounts: string[]) => {
   return findAccountMentionsInText(text, accounts)[0];
 };
+const findAccountHitsInText = (text: string, accounts: string[]) => {
+  const normalizedText = normalizeLoose(text);
+  const hits: Array<{ name: string; index: number }> = [];
+
+  accounts.forEach((name) => {
+    const aliases = accountAliases(name).filter((alias) => alias.length >= 2);
+    let bestIndex = Number.POSITIVE_INFINITY;
+
+    aliases.forEach((alias) => {
+      const idx = normalizedText.indexOf(alias);
+      if (idx >= 0 && idx < bestIndex) bestIndex = idx;
+    });
+
+    const flexible = buildFlexibleAccountRegex(name);
+    if (flexible) {
+      const match = text.match(flexible);
+      if (match?.index !== undefined) {
+        bestIndex = Math.min(bestIndex, match.index);
+      }
+    }
+
+    if (Number.isFinite(bestIndex)) {
+      hits.push({ name, index: bestIndex });
+    }
+  });
+
+  return hits.sort((a, b) => a.index - b.index);
+};
+
+const TRANSFER_VERBS = /(轉帳|轉賬|轉出|轉入|轉|匯款|匯出|匯入|匯|提領|提款|領錢|領)/;
+const TRANSFER_CONNECTORS = /(到|至|給|進|入)/g;
+
+const extractTransferAccounts = (text: string, accounts: string[]) => {
+  const connectorMatches = Array.from(text.matchAll(TRANSFER_CONNECTORS));
+  const connector = connectorMatches[connectorMatches.length - 1];
+
+  if (connector && connector.index !== undefined) {
+    const left = text.slice(0, connector.index);
+    const right = text.slice(connector.index + connector[0].length);
+    const fromByLeft = findBestAccountMatch(left, accounts);
+    const toByRight = findBestAccountMatch(right, accounts);
+
+    if (fromByLeft || toByRight) {
+      return { from: fromByLeft, to: toByRight };
+    }
+  }
+
+  const hits = findAccountHitsInText(text, accounts);
+  if (hits.length >= 2) {
+    return { from: hits[0].name, to: hits[1].name };
+  }
+  return { from: hits[0]?.name, to: undefined };
+};
 
 const cleanDescription = (text: string, accounts: string[] = []) => {
   let result = text;
@@ -196,20 +249,25 @@ const parseTransactionLocal = (
   const amountMatch = amountScanText.match(/(\d+(?:\.\d+)?)/);
   const amount = amountMatch ? Number(amountMatch[1]) : undefined;
 
+  const transferByVerb = TRANSFER_KEYWORDS.some((k) => text.includes(k)) || TRANSFER_VERBS.test(text);
+  const directionalAccounts = extractTransferAccounts(text, accounts);
+
   let type: TransactionType = 'expense';
-  if (TRANSFER_KEYWORDS.some((k) => text.includes(k))) {
+  if (transferByVerb || (directionalAccounts.from && directionalAccounts.to)) {
     type = 'transfer';
   } else if (INCOME_KEYWORDS.some((k) => text.includes(k)) || lower.includes('income')) {
     type = 'income';
   }
 
   const mentionedAccounts = findAccountMentionsInText(text, accounts);
-  const sourceAccountName = mentionedAccounts[0] || findBestAccountMatch(text, accounts);
+  const sourceAccountName = directionalAccounts.from || mentionedAccounts[0] || findBestAccountMatch(text, accounts);
   const availableCategories = categories
     .filter((c) => !c.type || c.type === type)
     .map((c) => c.name);
   const accountName = sourceAccountName;
-  const toAccountName = type === 'transfer' ? mentionedAccounts.find((a) => a !== sourceAccountName) : undefined;
+  const fallbackTarget = mentionedAccounts.find((a) => a !== sourceAccountName);
+  const cashTarget = text.includes('現金') ? findBestAccountMatch('現金', accounts) : undefined;
+  const toAccountName = type === 'transfer' ? (directionalAccounts.to || fallbackTarget || cashTarget) : undefined;
   const categoryName = type === 'transfer' ? '轉帳' : inferCategoryFromText(text, availableCategories, type);
 
   let date = today;
@@ -283,7 +341,13 @@ export async function parseTransactionAI(
     return fallback;
   }
 
-  if (isLocalParseConfident(fallback, input)) {
+  const shouldBypassAiForTransfer =
+    fallback.type === 'transfer' &&
+    Boolean(fallback.accountName) &&
+    Boolean(fallback.toAccountName) &&
+    fallback.accountName !== fallback.toAccountName;
+
+  if (shouldBypassAiForTransfer) {
     return fallback;
   }
 
@@ -539,4 +603,13 @@ export async function getFinancialAdvice(
     return localAdvice;
   }
 }
+
+
+
+
+
+
+
+
+
 
