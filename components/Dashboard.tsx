@@ -36,6 +36,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [showDateMenu, setShowDateMenu] = useState(false);
   const [showAdviceModal, setShowAdviceModal] = useState(false);
   const adviceCacheRef = useRef<{ key: string; text: string } | null>(null);
+  const adviceRunCounterRef = useRef(0);
 
   const scopeMap = useMemo(() => {
     const m: Record<string, string> = { all: '全部用途', scope_personal: '個人' };
@@ -166,15 +167,16 @@ const Dashboard: React.FC<DashboardProps> = ({
       budgets: budgetContexts.map((b) => [b.name, b.currencyCode, b.amount, Math.round(b.expense), Math.round(b.progress), b.scopeIds.join(','), b.period]),
       dominantBudget,
     });
-
-    if (adviceCacheRef.current?.key === cacheKey) {
-      setAdvice(adviceCacheRef.current.text);
-      return;
-    }
+    adviceRunCounterRef.current += 1;
+    const requestId = `${Date.now()}_${adviceRunCounterRef.current}`;
+    const previousAdvice = advice || adviceCacheRef.current?.text || undefined;
 
     setIsAnalyzing(true);
     try {
-      const result = await getFinancialAdvice(expenseTransactions, dominantBudget, budgetContexts);
+      const result = await getFinancialAdvice(expenseTransactions, dominantBudget, budgetContexts, {
+        previousAdvice,
+        requestId,
+      });
       adviceCacheRef.current = { key: cacheKey, text: result };
       setAdvice(result);
     } catch {
@@ -182,7 +184,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     } finally {
       setIsAnalyzing(false);
     }
-  }, [budgetInfo, periodStats.code, transactions]);
+  }, [advice, budgetInfo, periodStats.code, transactions]);
 
   const handleGetAdvice = async () => {
     await getCurrentAdvice();
@@ -331,4 +333,6 @@ const Dashboard: React.FC<DashboardProps> = ({
 };
 
 export default Dashboard;
+
+
 

@@ -12,9 +12,9 @@ const getAiClient = () => {
 };
 const FAST_MODEL = 'gemini-2.0-flash-lite';
 const TRANSFER_KEYWORDS = ['轉帳', '轉賬', '轉到', '轉入', '轉出', '匯款', '匯入', '匯出'];
-const INCOME_KEYWORDS = ['薪水', '薪資', '收入', '進帳', '入帳', '獎金', '退款'];
+const INCOME_KEYWORDS = ['薪水', '薪資', '收入', '進帳', '入帳', '獎金', '退款', '紅包', '股利', '股息', '配息', '分紅', '回饋'];
 const FOOD_KEYWORDS = ['早餐', '午餐', '晚餐', '餐', '便當', '飲料', '咖啡', '宵夜', '吃飯'];
-const TRANSPORT_KEYWORDS = ['捷運', '公車', '計程車', 'taxi', 'uber', '高鐵', '火車', '停車', '油錢', '加油'];
+const TRANSPORT_KEYWORDS = ['交通', '車資', '車錢', '捷運', '公車', '計程車', 'taxi', 'uber', '高鐵', '火車', '停車', '過路費', '油錢', '加油'];
 const DAILY_KEYWORDS = ['超商', '全聯', '家樂福', '日用品', '文具', '用品', '購物', '生活'];
 const HOUSE_KEYWORDS = ['房租', '租金', '水費', '電費', '瓦斯', '家電', '家具', '修繕'];
 const PLAY_KEYWORDS = ['電影', '遊戲', 'ktv', '唱歌', '聚餐', '旅遊', '娛樂', '演唱會', '串流'];
@@ -164,6 +164,7 @@ const findAccountHitsInText = (text: string, accounts: string[]) => {
 
 const TRANSFER_VERBS = /(轉帳|轉賬|轉出|轉入|轉|匯款|匯出|匯入|匯|提領|提款|領錢|領)/;
 const TRANSFER_CONNECTORS = /(到|至|給|進|入)/g;
+const INCOME_VERBS = /(收到|收|入帳|進帳|存入|領到|拿到|給我|發給我)/;
 
 const extractTransferAccounts = (text: string, accounts: string[]) => {
   const connectorMatches = Array.from(text.matchAll(TRANSFER_CONNECTORS));
@@ -225,7 +226,7 @@ const inferCategoryFromText = (text: string, categories: string[], type: Transac
   }
 
   if (hasAnyKeyword(text, FOOD_KEYWORDS)) return pickByPattern(categories, /(餐|飲|食|food|meal|eat)/i);
-  if (hasAnyKeyword(text, TRANSPORT_KEYWORDS)) return pickByPattern(categories, /(交|車|運|transport|traffic|commute)/i);
+  if (hasAnyKeyword(text, TRANSPORT_KEYWORDS) || /(交通|車資|車錢|捷運|公車|計程|uber|高鐵|火車|停車|過路費|油錢|加油)/i.test(text)) return pickByPattern(categories, /(交|車|運|transport|traffic|commute)/i);
   if (hasAnyKeyword(text, DAILY_KEYWORDS)) return pickByPattern(categories, /(日常|生活|購物|用品|雜支|shop)/i);
   if (hasAnyKeyword(text, HOUSE_KEYWORDS)) return pickByPattern(categories, /(居家|住|房|租|家|home|house)/i);
   if (hasAnyKeyword(text, PLAY_KEYWORDS)) return pickByPattern(categories, /(娛|樂|遊|電影|休閒|play|fun)/i);
@@ -251,15 +252,27 @@ const parseTransactionLocal = (
 
   const transferByVerb = TRANSFER_KEYWORDS.some((k) => text.includes(k)) || TRANSFER_VERBS.test(text);
   const directionalAccounts = extractTransferAccounts(text, accounts);
+  const mentionedAccounts = findAccountMentionsInText(text, accounts);
+  const hasTwoAccounts =
+    Boolean(directionalAccounts.from) &&
+    Boolean(directionalAccounts.to) &&
+    directionalAccounts.from !== directionalAccounts.to;
+  const incomeByKeyword =
+    INCOME_KEYWORDS.some((k) => text.includes(k)) ||
+    hasAnyKeyword(text, SALARY_KEYWORDS) ||
+    hasAnyKeyword(text, BONUS_KEYWORDS) ||
+    hasAnyKeyword(text, INVEST_KEYWORDS) ||
+    INCOME_VERBS.test(text) ||
+    lower.includes('income');
 
   let type: TransactionType = 'expense';
-  if (transferByVerb || (directionalAccounts.from && directionalAccounts.to)) {
+  if (hasTwoAccounts) {
     type = 'transfer';
-  } else if (INCOME_KEYWORDS.some((k) => text.includes(k)) || lower.includes('income')) {
+  } else if (transferByVerb && mentionedAccounts.length >= 2 && !incomeByKeyword) {
+    type = 'transfer';
+  } else if (incomeByKeyword) {
     type = 'income';
   }
-
-  const mentionedAccounts = findAccountMentionsInText(text, accounts);
   const sourceAccountName = directionalAccounts.from || mentionedAccounts[0] || findBestAccountMatch(text, accounts);
   const availableCategories = categories
     .filter((c) => !c.type || c.type === type)
@@ -405,6 +418,26 @@ export async function parseTransactionAI(
     cleanJson = cleanJson.replace(/```json/g, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(cleanJson) as ParsedInput;
     const merged: ParsedInput = { ...fallback, ...parsed };
+    const hasStrongIncomeHint =
+      hasAnyKeyword(input, SALARY_KEYWORDS) ||
+      hasAnyKeyword(input, BONUS_KEYWORDS) ||
+      hasAnyKeyword(input, INVEST_KEYWORDS) ||
+      INCOME_VERBS.test(input);
+    const hasStrongExpenseHint =
+      hasAnyKeyword(input, FOOD_KEYWORDS) ||
+      hasAnyKeyword(input, TRANSPORT_KEYWORDS) ||
+      hasAnyKeyword(input, DAILY_KEYWORDS) ||
+      hasAnyKeyword(input, HOUSE_KEYWORDS) ||
+      hasAnyKeyword(input, PLAY_KEYWORDS) ||
+      hasAnyKeyword(input, HEALTH_KEYWORDS);
+
+    let forcedCategoryName: string | undefined;
+    if (merged.type === 'income' && hasStrongIncomeHint && fallback.categoryName) {
+      forcedCategoryName = fallback.categoryName;
+    }
+    if (merged.type === 'expense' && hasStrongExpenseHint && fallback.categoryName) {
+      forcedCategoryName = fallback.categoryName;
+    }
     const explicitMentions = findAccountMentionsInText(input, accounts);
     const resolvedAccount = merged.accountName ? findBestAccountMatch(merged.accountName, accounts) : undefined;
     const resolvedToAccount = merged.toAccountName ? findBestAccountMatch(merged.toAccountName, accounts) : undefined;
@@ -415,6 +448,7 @@ export async function parseTransactionAI(
       ...merged,
       accountName: forcedSource ?? resolvedAccount ?? fallback.accountName,
       toAccountName: forcedTarget ?? resolvedToAccount ?? fallback.toAccountName,
+      categoryName: forcedCategoryName || merged.categoryName || fallback.categoryName,
       description: cleanDesc || fallback.description,
     };
   } catch (e) {
@@ -467,58 +501,12 @@ export async function categorizeExpense(
   }
 }
 
-const buildLocalFinancialAdvice = (
-  expenseOnly: Transaction[],
-  summary: Record<string, number>,
-  total: number,
-  budgetContexts: Array<{
-    name: string;
-    currencyCode: string;
-    amount: number;
-    expense: number;
-    progress: number;
-    isOver: boolean;
-    scopeNames: string;
-    scopeIds: string[];
-    period: 'week' | 'month' | 'year';
-  }>
-) => {
-  const tips: string[] = [];
-  const topCategory = Object.entries(summary).sort((a, b) => b[1] - a[1])[0];
+type AdviceStrategy = 'risk' | 'efficiency' | 'structure';
 
-  if (budgetContexts.length === 0) {
-    tips.push(`目前尚未設定預算；先建立一筆常用用途預算，較容易控管支出。`);
-  } else {
-    const prioritized = [...budgetContexts].sort((a, b) => {
-      const aScore = (a.isOver ? 200 : 0) + a.progress;
-      const bScore = (b.isOver ? 200 : 0) + b.progress;
-      return bScore - aScore;
-    });
-
-    prioritized.slice(0, 2).forEach((b) => {
-      if (b.isOver) {
-        tips.push(`「${b.name}」(${b.scopeNames}) 已超支，先凍結可延後項目。`);
-      } else if (b.progress >= 85) {
-        tips.push(`「${b.name}」(${b.scopeNames}) 已達 ${Math.round(b.progress)}%，接近上限。`);
-      } else {
-        const remain = Math.max(0, b.amount - b.expense);
-        tips.push(`「${b.name}」(${b.scopeNames}) 尚可使用 ${Math.round(remain)}，建議保留彈性。`);
-      }
-    });
-  }
-
-  if (topCategory) {
-    const ratio = total > 0 ? Math.round((topCategory[1] / total) * 100) : 0;
-    tips.push(`主要開銷在「${topCategory[0]}」(約 ${ratio}%)，優先從這類做優化。`);
-  }
-
-  if (expenseOnly.length > 0) {
-    const recent = expenseOnly.slice(-5);
-    const avgRecent = recent.reduce((sum, tx) => sum + tx.amount, 0) / recent.length;
-    tips.push(`最近 ${recent.length} 筆平均支出約 ${Math.round(avgRecent)}，可設單筆提醒門檻。`);
-  }
-
-  return tips.slice(0, 3).map((tip, idx) => `${idx + 1}. ${tip}`).join('\n');
+const pickAdviceStrategy = (salt: string): AdviceStrategy => {
+  const hash = Array.from(salt).reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  const modes: AdviceStrategy[] = ['risk', 'efficiency', 'structure'];
+  return modes[hash % modes.length];
 };
 
 export async function getFinancialAdvice(
@@ -534,7 +522,8 @@ export async function getFinancialAdvice(
     scopeNames: string;
     scopeIds: string[];
     period: 'week' | 'month' | 'year';
-  }> = []
+  }> = [],
+  options?: { previousAdvice?: string; requestId?: string }
 ): Promise<string> {
   if (expenses.length === 0) return '目前資料不足，先新增一些交易再分析。';
 
@@ -556,53 +545,78 @@ export async function getFinancialAdvice(
     return acc;
   }, {} as Record<string, number>);
 
-  const summaryStr = Object.entries(summary)
-    .map(([n, a]) => `${n}:${Math.round(a)}`)
-    .join(',');
+  const variantSalt = options?.requestId || String(Date.now());
+  const strategy = pickAdviceStrategy(variantSalt);
 
-  const overBudgetItems = budgetContexts.filter((b) => b.isOver).length;
-  const budgetContextText = budgetContexts.length
-    ? budgetContexts
-        .map(
-          (b) =>
-            `${b.name}(${b.scopeNames},${b.period}) ${Math.round(b.expense)}/${Math.round(b.amount)} ${Math.round(b.progress)}%${b.isOver ? ' 已超支' : ''}`
-        )
-        .join('；')
-    : '目前沒有已設定預算';
-
-  const localAdvice = buildLocalFinancialAdvice(adviceBaseExpenses, summary, total, budgetContexts);
-
-  // Small datasets are handled locally for instant response.
-  if (adviceBaseExpenses.length <= 4) return localAdvice;
-
-  const ai = getAiClient();
-  if (!ai) return localAdvice;
-
-  try {
-    const aiCall = ai.models.generateContent({
-      model: FAST_MODEL,
-      contents: `你是理財顧問。請根據資料提供 3 條繁體中文建議，每條 15~28 字，避免互相矛盾。\n總預算參考:${Math.round(budget)}\n支出總額:${Math.round(total)}\n分類支出:${summaryStr}\n多預算情境:${budgetContextText}\n規則: 若沒有預算，不能寫超支。若有多個預算，分別評估各用途。不要評論未納入預算用途。`,
-      config: {
-        temperature: 0.25,
-        topK: 1,
-        maxOutputTokens: 260,
-      },
+  const tips: string[] = [];
+  if (budgetContexts.length === 0) {
+    tips.push('尚未設定預算，先建立每月用途預算能提升分析準確度。');
+  } else {
+    const prioritized = [...budgetContexts].sort((a, b) => {
+      const aScore = (a.isOver ? 1000 : 0) + a.progress;
+      const bScore = (b.isOver ? 1000 : 0) + b.progress;
+      return bScore - aScore;
     });
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('AI timeout')), 2500);
-    });
-
-    const response = (await Promise.race([aiCall, timeoutPromise])) as Awaited<typeof aiCall>;
-    if (timer) clearTimeout(timer);
-
-    const text = response.text?.trim();
-    return text || localAdvice;
-  } catch {
-    return localAdvice;
+    const focus = prioritized[0];
+    if (focus) {
+      if (focus.isOver) {
+        tips.push(`「${focus.name}」已超支，先壓低非必要支出。`);
+      } else if (focus.progress >= 85) {
+        tips.push(`「${focus.name}」使用率 ${Math.round(focus.progress)}%，接近上限。`);
+      } else {
+        tips.push(`「${focus.name}」目前使用率 ${Math.round(focus.progress)}%，可持續追蹤。`);
+      }
+    }
   }
+
+  const topCategories = Object.entries(summary).sort((a, b) => b[1] - a[1]);
+  const top1 = topCategories[0];
+  const top2 = topCategories[1];
+  if (top1) {
+    const ratio = total > 0 ? Math.round((top1[1] / total) * 100) : 0;
+    if (strategy === 'risk') tips.push(`主要支出在「${top1[0]}」約 ${ratio}%，建議設定單類上限。`);
+    else if (strategy === 'efficiency') tips.push(`「${top1[0]}」占比 ${ratio}%，可檢視是否有替代方案。`);
+    else tips.push(`支出結構以「${top1[0]}」為主，建議觀察週期波動。`);
+  }
+  if (top2 && tips.length < 3) {
+    const ratio2 = total > 0 ? Math.round((top2[1] / total) * 100) : 0;
+    tips.push(`次高支出為「${top2[0]}」約 ${ratio2}%，可作為第二優先調整項。`);
+  }
+
+  const recent = adviceBaseExpenses.slice(-5);
+  if (recent.length > 0 && tips.length < 3) {
+    const avgRecent = Math.round(recent.reduce((sum, tx) => sum + tx.amount, 0) / recent.length);
+    tips.push(`最近 ${recent.length} 筆平均支出約 ${avgRecent}，可據此設定提醒門檻。`);
+  }
+
+  if (tips.length < 3) {
+    const remain = Math.max(0, Math.round(budget - total));
+    tips.push(`本期剩餘可用額度約 ${remain}，建議預留彈性給必要支出。`);
+  }
+
+  const advice = tips.slice(0, 3).map((tip, idx) => `${idx + 1}. ${tip}`).join('\n');
+  if (options?.previousAdvice && advice.trim() === options.previousAdvice.trim()) {
+    return `${advice}\n補充：可切換區間後再分析，會得到不同觀點。`;
+  }
+  return advice;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

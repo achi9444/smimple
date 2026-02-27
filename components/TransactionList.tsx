@@ -41,11 +41,13 @@ const TransactionList: React.FC<TransactionListProps> = ({
   };
 
   const groupedByDay = useMemo(() => {
-    const map: Record<string, Transaction[]> = {};
+    const map: Record<string, { rows: Transaction[]; income: number; expense: number }> = {};
     transactions.forEach((tx) => {
       const key = toDateKey(tx.date);
-      if (!map[key]) map[key] = [];
-      map[key].push(tx);
+      if (!map[key]) map[key] = { rows: [], income: 0, expense: 0 };
+      map[key].rows.push(tx);
+      if (tx.type === 'income') map[key].income += tx.amount;
+      if (tx.type === 'expense') map[key].expense += tx.amount;
     });
     return Object.entries(map).sort((a, b) => b[0].localeCompare(a[0]));
   }, [transactions]);
@@ -131,7 +133,8 @@ const TransactionList: React.FC<TransactionListProps> = ({
         {groupedByDay.length === 0 ? (
           <div className="p-16 text-center text-[#B7ADA4] font-bold italic text-sm">目前沒有交易資料</div>
         ) : (
-          groupedByDay.map(([day, rows]) => {
+          groupedByDay.map(([day, group]) => {
+            const { rows, income, expense } = group;
             const collapsed = !!collapsedDays[day];
             return (
               <div key={day} className="border-b border-[#E6DED6] last:border-b-0">
@@ -142,6 +145,8 @@ const TransactionList: React.FC<TransactionListProps> = ({
                 >
                   <span className="text-xs font-black text-[#1A1A1A]">{day.replace(/-/g, '/')}</span>
                   <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-[#729B79]">收入：{income.toLocaleString()}元</span>
+                    <span className="text-[10px] font-bold text-[#D66D5B]">支出：{expense.toLocaleString()}元</span>
                     <span className="text-[10px] font-bold text-[#B7ADA4]">{rows.length} 筆</span>
                     <LucideIcons.ChevronDown size={14} className={`text-[#B7ADA4] transition-transform ${collapsed ? '' : 'rotate-180'}`} />
                   </div>

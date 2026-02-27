@@ -22,6 +22,9 @@ const AccountManager: React.FC<AccountManagerProps> = ({
   availableByAccount,
   onUpdate,
   onDelete,
+  transactions = [],
+  categories = [],
+  scopes = [],
 }) => {
   const [formMode, setFormMode] = useState<'add' | 'edit' | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -39,6 +42,7 @@ const AccountManager: React.FC<AccountManagerProps> = ({
   const [icon, setIcon] = useState('Briefcase');
   const [color, setColor] = useState('#D08C70');
   const [pickerModal, setPickerModal] = useState<null | 'currency'>(null);
+  const [detailAccountId, setDetailAccountId] = useState<string | null>(null);
 
   const colors = ['#D08C70', '#8FB996', '#5B84B1', '#C97B63', '#9C6644', '#E07A5F', '#B7ADA4'];
   const icons = ['Briefcase', 'Wallet', 'CreditCard', 'PiggyBank', 'Landmark', 'CircleDollarSign', 'Coins', 'Building2', 'Banknote', 'BadgeDollarSign', 'CircleEllipsis', 'Vault', 'Smartphone', 'IdCard', 'Receipt', 'Ticket', 'Gem', 'Bitcoin', 'Car', 'Home'];
@@ -76,6 +80,42 @@ const AccountManager: React.FC<AccountManagerProps> = ({
   const currentSymbol = SUPPORTED_CURRENCIES.find((c) => c.code === activeCurrencyTab)?.symbol || '$';
 
   const orderedAccounts = useMemo(() => (isSortMode && sortDraft ? sortDraft : accounts), [isSortMode, sortDraft, accounts]);
+  const selectedAccount = useMemo(() => accounts.find((a) => a.id === detailAccountId) || null, [accounts, detailAccountId]);
+  const categoryByName = useMemo(() => {
+    const map = new Map<string, Category>();
+    categories.forEach((cat) => map.set(cat.name, cat));
+    return map;
+  }, [categories]);
+  const scopeById = useMemo(() => {
+    const map = new Map<string, SpendingScope>();
+    scopes.forEach((scope) => map.set(scope.id, scope));
+    return map;
+  }, [scopes]);
+  const accountTransactions = useMemo(() => {
+    if (!detailAccountId) return [] as Transaction[];
+    return transactions
+      .filter((tx) => tx.accountId === detailAccountId || tx.toAccountId === detailAccountId)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [transactions, detailAccountId]);
+  const accountTransactionsWithBalance = useMemo(() => {
+    if (!detailAccountId || !selectedAccount) return [] as Array<{ tx: Transaction; balanceAfter: number }>;
+
+    const getDelta = (tx: Transaction) => {
+      if (tx.type === 'income') return tx.accountId === detailAccountId ? tx.amount : 0;
+      if (tx.type === 'expense') return tx.accountId === detailAccountId ? -tx.amount : 0;
+      let delta = 0;
+      if (tx.accountId === detailAccountId) delta -= tx.amount;
+      if (tx.toAccountId === detailAccountId) delta += tx.amount;
+      return delta;
+    };
+
+    let rollingBalance = selectedAccount.balance;
+    return accountTransactions.map((tx) => {
+      const balanceAfter = rollingBalance;
+      rollingBalance -= getDelta(tx);
+      return { tx, balanceAfter };
+    });
+  }, [accountTransactions, detailAccountId, selectedAccount]);
 
   const renderIcon = (iconName: string, iconColor: string, size = 24) => {
     const IconComponent = (LucideIcons as any)[iconName] || LucideIcons.Briefcase;
@@ -267,6 +307,55 @@ const AccountManager: React.FC<AccountManagerProps> = ({
         </div>
       </div>
 
+      {detailAccountId && selectedAccount && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setDetailAccountId(null)} />
+          <div className="relative z-10 w-full max-w-2xl rounded-3xl border border-[#E6DED6] bg-white shadow-2xl max-h-[85vh] overflow-hidden">
+            <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
+              <div>
+                <h4 className="text-sm font-black text-[#1A1A1A]">{selectedAccount.name} 交易明細</h4>
+                <p className="text-[10px] font-bold text-[#B7ADA4] mt-1">共 {accountTransactions.length} 筆</p>
+              </div>
+              <button onClick={() => setDetailAccountId(null)} className="text-[#B7ADA4] hover:text-[#1A1A1A]"><LucideIcons.X size={18} /></button>
+            </div>
+            <div className="max-h-[65vh] overflow-y-auto p-3 space-y-2">
+              {accountTransactions.length === 0 ? (
+                <div className="rounded-2xl border border-[#E6DED6] bg-[#FAF7F2] px-4 py-6 text-center text-xs font-bold text-[#B7ADA4]">此帳戶尚無交易資料</div>
+              ) : (
+                accountTransactionsWithBalance.map(({ tx, balanceAfter }) => {
+                  const cat = categoryByName.get(tx.category);
+                  const Icon = ((LucideIcons as any)[cat?.icon || 'Layers']) || LucideIcons.Layers;
+                  const symbol = SUPPORTED_CURRENCIES.find((c) => c.code === tx.currencyCode)?.symbol || '$';
+                  const isIncomeLike = tx.type === 'income' || (tx.type === 'transfer' && tx.toAccountId === detailAccountId);
+                  const amountTone = isIncomeLike ? '#729B79' : '#D66D5B';
+                  const scope = scopeById.get(tx.scopeId || 'scope_personal');
+                  return (
+                    <div key={tx.id} className="rounded-2xl border border-[#E6DED6] bg-white p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${cat?.color || '#B7ADA4'}1A` }}><Icon size={13} style={{ color: cat?.color || '#B7ADA4' }} /></span>
+                            <p className="text-xs font-black text-[#1A1A1A] truncate">{tx.description || tx.category}</p>
+                          </div>
+                          <div className="mt-1 flex items-center gap-2 text-[10px] font-bold text-[#B7ADA4]">
+                            <span>{new Date(tx.date).toLocaleDateString('zh-TW')}</span>
+                            <span className="px-2 py-0.5 rounded-full border" style={{ borderColor: `${cat?.color || '#B7ADA4'}66`, color: cat?.color || '#6B6661' }}>{tx.category}</span>
+                            {scope && <span className="px-2 py-0.5 rounded-full border border-[#E6DED6] text-[#9A938A]">{scope.name}</span>}
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-sm font-black" style={{ color: amountTone }}>{isIncomeLike ? '+' : '-'}{symbol}{Math.abs(tx.amount).toLocaleString()}</span>
+                          <span className="text-[10px] font-bold text-[#9A938A]">餘額：{symbol}{balanceAfter.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {formMode && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40" onClick={() => setFormMode(null)} />
@@ -379,7 +468,7 @@ const AccountManager: React.FC<AccountManagerProps> = ({
               onDrop={() => { if (isSortMode && draggingId) moveAccount(draggingId, acc.id); }}
               className={`custom-card p-6 rounded-[2.5rem] flex justify-between items-center bg-white group transition-all ${draggingId === acc.id ? 'border-2 border-[#D08C70] shadow-xl' : 'hover:border-[#D08C70]/30'}`}
             >
-              <div className="flex items-center gap-5 cursor-pointer flex-1" onClick={() => { if (!isSortMode) openEdit(acc); }}>
+              <div className="flex items-center gap-5 cursor-pointer flex-1" onClick={() => { if (!isSortMode) setDetailAccountId(acc.id); }}>
                 <div className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-sm" style={{ backgroundColor: `${acc.color}15` }}>
                   {renderIcon(acc.icon, acc.color)}
                 </div>
@@ -397,16 +486,30 @@ const AccountManager: React.FC<AccountManagerProps> = ({
               </div>
 
               {!isSortMode && (
-                <button
-                  type="button"
-                  onClick={(e) => handleDeleteClick(e, acc.id)}
-                  className={`flex items-center justify-center transition-all rounded-xl ${
-                    isConfirming ? 'bg-red-500 text-white px-3 py-2 shadow-md scale-105' : 'text-[#B7ADA4] hover:text-red-500 hover:bg-red-50 p-3'
-                  }`}
-                  title={isConfirming ? '再次點擊確認刪除' : '刪除帳戶'}
-                >
-                  {isConfirming ? <span className="text-[10px] font-black whitespace-nowrap">確認刪除</span> : <LucideIcons.Trash2 size={20} />}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openEdit(acc);
+                    }}
+                    className="text-[#B7ADA4] hover:text-[#1A1A1A] hover:bg-[#FAF7F2] p-3 rounded-xl transition-all"
+                    title="編輯帳戶"
+                  >
+                    <LucideIcons.Pencil size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteClick(e, acc.id)}
+                    className={`flex items-center justify-center transition-all rounded-xl ${
+                      isConfirming ? 'bg-red-500 text-white px-3 py-2 shadow-md scale-105' : 'text-[#B7ADA4] hover:text-red-500 hover:bg-red-50 p-3'
+                    }`}
+                    title={isConfirming ? '再次點擊確認刪除' : '刪除帳戶'}
+                  >
+                    {isConfirming ? <span className="text-[10px] font-black whitespace-nowrap">確認刪除</span> : <LucideIcons.Trash2 size={20} />}
+                  </button>
+                </div>
               )}
             </div>
           );
@@ -423,6 +526,7 @@ const AccountManager: React.FC<AccountManagerProps> = ({
 };
 
 export default AccountManager;
+
 
 
 

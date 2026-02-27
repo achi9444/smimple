@@ -502,6 +502,14 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
     setIsAnalyzing(true);
     setAiHint('');
 
+    let latestPrefs = learnedPrefs;
+    try {
+      latestPrefs = await loadLearnedPrefsStorage();
+      setLearnedPrefs(latestPrefs);
+    } catch {
+      // keep in-memory prefs when db read fails
+    }
+
     try {
       const result = await parseTransactionAI(
         aiInput,
@@ -518,9 +526,15 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
       if (result.type) setType(result.type);
       if (result.description) setDescription(result.description);
       if (result.date) setDate(clampDateToToday(result.date));
+      const learnedCategory = nextType !== 'transfer' ? findLearnedPref(latestPrefs, nextType, sanitizeDescription((result.description || aiInput).trim(), accounts) || (result.description || aiInput).trim())?.category : undefined;
       if (nextType !== 'transfer') {
-        setCategory(ensureCategoryForType(nextType, result.categoryName || category));
+        setCategory(ensureCategoryForType(nextType, learnedCategory || result.categoryName || category));
       }
+
+      const candidateDesc = sanitizeDescription((result.description || aiInput).trim(), accounts) || (result.description || aiInput).trim();
+      const learnedPref = findLearnedPref(latestPrefs, nextType, candidateDesc);
+      const learnedSourceAccount = learnedPref?.accountId ? accounts.find((a) => a.id === learnedPref.accountId) : undefined;
+      const learnedTargetAccount = learnedPref?.toAccountId ? accounts.find((a) => a.id === learnedPref.toAccountId) : undefined;
 
       const sourceAccount = result.accountName
         ? resolveAccount(result.accountName)
@@ -535,8 +549,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
         ? explicitAccounts.find((a) => a.id !== forcedSourceAccount?.id)
         : undefined;
 
-      const finalSourceAccount = forcedSourceAccount || sourceAccount;
-      const finalTargetAccount = forcedTargetAccount || targetAccount;
+      const finalSourceAccount = forcedSourceAccount || learnedSourceAccount || sourceAccount;
+      const finalTargetAccount = forcedTargetAccount || learnedTargetAccount || targetAccount;
 
       if (finalSourceAccount) setAccountId(finalSourceAccount.id);
       if (finalTargetAccount) setToAccountId(finalTargetAccount.id);
@@ -549,7 +563,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
       if (Number.isFinite(parsedAmount) && parsedAmount > 0 && finalSourceAccount) {
         const parsedDate = result.date ? new Date(clampDateToToday(result.date)) : new Date(clampDateToToday(date));
         const txDateIso = Number.isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
-        const txCategory = ensureCategoryForType(nextType, result.categoryName || category);
+        const txCategory = ensureCategoryForType(nextType, learnedPref?.category || result.categoryName || category);
         const rawTxDescription = (result.description || description || txCategory).trim();
         const txDescription = sanitizeDescription(rawTxDescription, accounts) || txCategory;
 
@@ -999,6 +1013,10 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
 };
 
 export default TransactionForm;
+
+
+
+
 
 
 

@@ -13,7 +13,7 @@ import BudgetManager from '../components/BudgetManager';
 import { canUse, getBucketLimit } from '../services/featureGate';
 import { buildAutoAllocations, getAvailableByAccount, getBucketAccountSpendable, getBucketTotals, getReservedByAccount } from '../services/savingAllocator';
 import { Transaction, Account, Category, DisplayRange, PlanTier, SavingBucket, BucketAllocation, BucketSpend, IncomeAllocationRule, SpendingScope, BudgetItem, DEFAULT_CATEGORIES, DEFAULT_ACCOUNTS, DEFAULT_SCOPES } from '../types';
-import { AppStorageData, clearAppStorage, loadAppStorage, saveAppStorage } from '../services/appStorage';
+import { AppStorageData, clearAppStorage, loadAppStorage, saveAppStorage, loadLearnedPrefsStorage, saveLearnedPrefsStorage } from '../services/appStorage';
 
 const App: React.FC = () => {
   // --- Single Source of Truth for All Data ---
@@ -32,13 +32,45 @@ const App: React.FC = () => {
   const [displayRange, setDisplayRange] = useState<DisplayRange>('month');
   
   const [storageReady, setStorageReady] = useState(false);
-
   // Helper to get local date string YYYY-MM-DD
   const getLocalDateString = (date: Date) => {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+  };
+const normalizeLearnedDesc = (text: string) =>
+    text
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, '')
+      .replace(/[.,!?，。！？、:;：；'"`~@#$%^&*()_+=\-[\]{}<>\\/|]/g, '');
+
+  const makeLearnedPrefKey = (type: Transaction['type'], description: string) => `${type}::${normalizeLearnedDesc(description)}`;
+
+  const persistLearnedPrefFromTransaction = (tx: Transaction) => {
+    const desc = (tx.description || '').trim();
+    if (!desc) return;
+    const key = makeLearnedPrefKey(tx.type, desc);
+    void loadLearnedPrefsStorage()
+      .then((prev) => {
+        const before = prev[key];
+        const next = {
+          ...prev,
+          [key]: {
+            type: tx.type,
+            category: tx.category,
+            accountId: tx.accountId,
+            toAccountId: tx.toAccountId,
+            updatedAt: Date.now(),
+            useCount: (before?.useCount ?? 0) + 1,
+          },
+        };
+        return saveLearnedPrefsStorage(next);
+      })
+      .catch((err) => {
+        console.error('Failed to persist learned pref from edited transaction.', err);
+      });
   };
 
 
@@ -363,6 +395,8 @@ const App: React.FC = () => {
         .map((t) => (t.id === updatedTx.id ? updatedTx : t))
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     );
+
+    persistLearnedPrefFromTransaction(updatedTx);
 
     removeLinkedAutoAllocations(updatedTx.id);
     removeLinkedBucketSpends(updatedTx.id);
@@ -720,6 +754,9 @@ const App: React.FC = () => {
 };
 
 export default App;
+
+
+
 
 
 
