@@ -1,6 +1,9 @@
 ﻿
 import React, { useEffect, useMemo, useState } from 'react';
 import { Home, Wallet, PieChart, Settings, Download, Upload, RefreshCw, PiggyBank } from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
+import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import TransactionForm from '../components/TransactionForm';
 import TransactionList from '../components/TransactionList';
 import Dashboard from '../components/Dashboard';
@@ -491,7 +494,7 @@ const normalizeLearnedDesc = (text: string) =>
     setIncomeRules((prev) => prev.filter((rule) => rule.id !== ruleId));
   };
 
-  const handleExportData = () => {
+  const handleExportData = async () => {
     const data = {
       transactions,
       accounts,
@@ -505,14 +508,44 @@ const normalizeLearnedDesc = (text: string) =>
       incomeRules,
       version: '1.1',
     };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `smimple_backup_${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const json = JSON.stringify(data, null, 2);
+    const filename = `smimple_backup_${new Date().toISOString().split('T')[0]}.json`;
+
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const path = `smimple/${filename}`;
+        await Filesystem.writeFile({
+          path,
+          data: json,
+          directory: Directory.Documents,
+          encoding: Encoding.UTF8,
+          recursive: true,
+        });
+        const uri = await Filesystem.getUri({
+          path,
+          directory: Directory.Documents,
+        });
+        await Share.share({
+          title: 'Smimple 備份檔',
+          text: 'Smimple JSON 備份',
+          url: uri.uri,
+          dialogTitle: '匯出資料',
+        });
+        return;
+      }
+
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export failed:', err);
+    }
   };
 
   const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
