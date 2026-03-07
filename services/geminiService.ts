@@ -161,6 +161,8 @@ const findAccountHitsInText = (text: string, accounts: string[]) => {
 
   return hits.sort((a, b) => a.index - b.index);
 };
+const findAccountMentionsByOrder = (text: string, accounts: string[]) =>
+  findAccountHitsInText(text, accounts).map((hit) => hit.name);
 
 const TRANSFER_VERBS = /(轉帳|轉賬|轉出|轉入|轉|匯款|匯出|匯入|匯|提領|提款|領錢|領)/;
 const TRANSFER_CONNECTORS = /(到|至|給|進|入)/g;
@@ -252,7 +254,7 @@ const parseTransactionLocal = (
 
   const transferByVerb = TRANSFER_KEYWORDS.some((k) => text.includes(k)) || TRANSFER_VERBS.test(text);
   const directionalAccounts = extractTransferAccounts(text, accounts);
-  const mentionedAccounts = findAccountMentionsInText(text, accounts);
+  const mentionedAccounts = findAccountMentionsByOrder(text, accounts);
   const hasTwoAccounts =
     Boolean(directionalAccounts.from) &&
     Boolean(directionalAccounts.to) &&
@@ -438,7 +440,7 @@ export async function parseTransactionAI(
     if (merged.type === 'expense' && hasStrongExpenseHint && fallback.categoryName) {
       forcedCategoryName = fallback.categoryName;
     }
-    const explicitMentions = findAccountMentionsInText(input, accounts);
+    const explicitMentions = findAccountMentionsByOrder(input, accounts);
     const resolvedAccount = merged.accountName ? findBestAccountMatch(merged.accountName, accounts) : undefined;
     const resolvedToAccount = merged.toAccountName ? findBestAccountMatch(merged.toAccountName, accounts) : undefined;
     const cleanDesc = cleanDescription(merged.description || input, accounts);

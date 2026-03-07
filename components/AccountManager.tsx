@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as LucideIcons from 'lucide-react';
 import CurrencyInput from 'react-currency-input-field';
 import { normalizeImeNumericRaw } from '../utils/numberInput';
@@ -33,6 +33,8 @@ const AccountManager: React.FC<AccountManagerProps> = ({
   const [isSortMode, setIsSortMode] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [sortDraft, setSortDraft] = useState<Account[] | null>(null);
+  const dragClientYRef = useRef<number | null>(null);
+  const autoScrollRafRef = useRef<number | null>(null);
 
   const [activeCurrencyTab, setActiveCurrencyTab] = useState<string>('TWD');
 
@@ -73,8 +75,22 @@ const AccountManager: React.FC<AccountManagerProps> = ({
     if (!isSortMode) {
       setSortDraft(null);
       setDraggingId(null);
+      dragClientYRef.current = null;
+      if (autoScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollRafRef.current);
+        autoScrollRafRef.current = null;
+      }
     }
   }, [isSortMode]);
+
+  useEffect(() => {
+    return () => {
+      if (autoScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollRafRef.current);
+        autoScrollRafRef.current = null;
+      }
+    };
+  }, []);
 
   const currentStats = financialOverview.stats[activeCurrencyTab] || { assets: 0, liabilities: 0, net: 0 };
   const currentSymbol = SUPPORTED_CURRENCIES.find((c) => c.code === activeCurrencyTab)?.symbol || '$';
@@ -224,24 +240,63 @@ const AccountManager: React.FC<AccountManagerProps> = ({
     setDraggingId(null);
   };
 
-  const autoScrollWhenDragging = (event: React.DragEvent) => {
-    const viewportHeight = window.innerHeight || 1;
-    const topThreshold = viewportHeight * 0.28;
-    const bottomThreshold = viewportHeight * 0.72;
-
-    if (event.clientY < topThreshold) {
-      const ratio = (topThreshold - event.clientY) / Math.max(topThreshold, 1);
-      window.scrollBy({ top: -(6 + ratio * 28), behavior: 'auto' });
-      return;
-    }
-
-    if (event.clientY > bottomThreshold) {
-      const ratio = (event.clientY - bottomThreshold) / Math.max(viewportHeight - bottomThreshold, 1);
-      window.scrollBy({ top: 6 + ratio * 28, behavior: 'auto' });
+  const stopAutoScroll = () => {
+    if (autoScrollRafRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
     }
   };
+
+  const ensureAutoScrollLoop = () => {
+    if (autoScrollRafRef.current !== null) return;
+
+    const tick = () => {
+      if (!isSortMode || !draggingId) {
+        stopAutoScroll();
+        return;
+      }
+
+      const y = dragClientYRef.current;
+      if (typeof y === 'number') {
+        const viewportHeight = window.innerHeight || 1;
+        const topThreshold = viewportHeight * 0.18;
+        const bottomThreshold = viewportHeight * 0.82;
+        let delta = 0;
+
+        if (y < topThreshold) {
+          const ratio = (topThreshold - y) / Math.max(topThreshold, 1);
+          delta = -(21.6 + ratio * 118.8);
+        } else if (y > bottomThreshold) {
+          const ratio = (y - bottomThreshold) / Math.max(viewportHeight - bottomThreshold, 1);
+          delta = 21.6 + ratio * 118.8;
+        }
+
+        if (delta !== 0) window.scrollBy({ top: delta, behavior: 'auto' });
+      }
+
+      autoScrollRafRef.current = window.requestAnimationFrame(tick);
+    };
+
+    autoScrollRafRef.current = window.requestAnimationFrame(tick);
+  };
   return (
-    <div className="space-y-8 pb-12">
+    <div
+      className="space-y-8 pb-12"
+      onDragOver={(e) => {
+        if (!isSortMode || !draggingId) return;
+        e.preventDefault();
+        dragClientYRef.current = e.clientY;
+        ensureAutoScrollLoop();
+      }}
+      onDrop={() => {
+        dragClientYRef.current = null;
+        stopAutoScroll();
+      }}
+      onDragEnd={() => {
+        dragClientYRef.current = null;
+        stopAutoScroll();
+      }}
+    >
       <div className="flex justify-between items-center gap-2">
         <h2 className="text-3xl font-black text-[#1A1A1A] tracking-tighter">帳戶管理</h2>
         <div className="flex items-center gap-2">
@@ -446,12 +501,12 @@ const AccountManager: React.FC<AccountManagerProps> = ({
             <div
               key={acc.id}
               draggable={isSortMode}
-              onDragStart={() => setDraggingId(acc.id)}
-              onDragEnd={() => setDraggingId(null)}
+              onDragStart={(e) => { setDraggingId(acc.id); dragClientYRef.current = e.clientY; ensureAutoScrollLoop(); }}
+              onDragEnd={() => { setDraggingId(null); dragClientYRef.current = null; stopAutoScroll(); }}
               onDragOver={(e) => {
                 if (!isSortMode || !draggingId || draggingId === acc.id) return;
                 e.preventDefault();
-                autoScrollWhenDragging(e);
+                dragClientYRef.current = e.clientY;
 
                 const dragIndex = orderedAccounts.findIndex((a) => a.id === draggingId);
                 const hoverIndex = orderedAccounts.findIndex((a) => a.id === acc.id);
@@ -465,7 +520,7 @@ const AccountManager: React.FC<AccountManagerProps> = ({
 
                 moveAccount(draggingId, acc.id);
               }}
-              onDrop={() => { if (isSortMode && draggingId) moveAccount(draggingId, acc.id); }}
+              onDrop={() => { if (isSortMode && draggingId) moveAccount(draggingId, acc.id); dragClientYRef.current = null; stopAutoScroll(); }}
               className={`custom-card p-6 rounded-[2.5rem] flex justify-between items-center bg-white group transition-all ${draggingId === acc.id ? 'border-2 border-[#D08C70] shadow-xl' : 'hover:border-[#D08C70]/30'}`}
             >
               <div className="flex items-center gap-5 cursor-pointer flex-1" onClick={() => { if (!isSortMode) setDetailAccountId(acc.id); }}>
@@ -526,6 +581,13 @@ const AccountManager: React.FC<AccountManagerProps> = ({
 };
 
 export default AccountManager;
+
+
+
+
+
+
+
 
 
 

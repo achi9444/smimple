@@ -269,24 +269,21 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
     (text: string) => {
       const target = normalizeLoose(text);
       if (!target) return [] as Account[];
-      const scored = accounts.filter((acc) => !acc.isDisabled && !acc.isArchived)
+      const orderedHits = accounts
+        .filter((acc) => !acc.isDisabled && !acc.isArchived)
         .map((acc) => {
-          const accountNormalized = normalizeLoose(acc.name);
-          const hintBoost = getAccountHintBoost(target, accountNormalized);
-          const aliases = accountAliases(acc.name);
-          let score = 0;
+          const aliases = accountAliases(acc.name).filter((alias) => alias.length >= 2);
+          let firstIndex = Number.POSITIVE_INFINITY;
           aliases.forEach((alias) => {
-            if (!alias) return;
-            if (target.includes(alias)) score = Math.max(score, alias.length + 1);
-            score = Math.max(score, similarityByChars(target, alias));
+            const idx = target.indexOf(alias);
+            if (idx >= 0 && idx < firstIndex) firstIndex = idx;
           });
-          score = Math.max(score, hintBoost);
-          return { acc, score };
+          return { acc, firstIndex };
         })
-        .filter((item) => item.score >= 0.55)
-        .sort((a, b) => b.score - a.score)
+        .filter((item) => Number.isFinite(item.firstIndex))
+        .sort((a, b) => a.firstIndex - b.firstIndex)
         .map((item) => item.acc);
-      return Array.from(new Map(scored.map((acc) => [acc.id, acc])).values());
+      return Array.from(new Map(orderedHits.map((acc) => [acc.id, acc])).values());
     },
     [accounts]
   );
@@ -607,7 +604,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
   return (
     <form onSubmit={handleSubmit} className="relative mb-6 rounded-3xl border border-[#E6DED6] bg-white p-4 space-y-3">
       <div className="rounded-2xl bg-[#1A1A1A] p-3 text-white space-y-2">
-        <label className="block text-[10px] font-black uppercase tracking-widest text-[#D08C70]">AI 記帳輸入</label>
+        <label className="block text-[10px] font-black uppercase tracking-widest text-[#D08C70]">一句話記帳</label>
         <div className="grid grid-cols-[minmax(0,1fr)_76px] items-center gap-2">
           <input
             type="text"
@@ -619,7 +616,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
                 void handleAiParse();
               }
             }}
-            placeholder="例如：午餐 180 現金，今天"
+            placeholder="例如：從 A 帳戶轉到 B 帳戶 500 元"
             className="h-10 flex-1 rounded-xl border border-white/20 bg-white/10 px-3 text-xs font-bold outline-none placeholder:text-white/40"
           />
           <button
@@ -628,7 +625,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onAdd, categories = [
             disabled={isAnalyzing || !aiInput.trim()}
             className="h-10 w-full rounded-xl bg-[#D08C70] px-2 text-[12px] font-black text-white whitespace-nowrap overflow-hidden text-ellipsis leading-none flex items-center justify-center disabled:opacity-50"
           >
-            {isAnalyzing ? '分析中' : '解析'}
+            {isAnalyzing ? '分析中' : '記帳'}
           </button>
         </div>
         {aiHint && <p className="text-[11px] font-bold text-[#E6DED6]">{aiHint}</p>}

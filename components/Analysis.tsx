@@ -348,14 +348,41 @@ const Analysis: React.FC<AnalysisProps> = ({
     </button>
   );
 
+  const getMonthBounds = (anchor: Date) => ({
+    start: formatDate(new Date(anchor.getFullYear(), anchor.getMonth(), 1)),
+    end: formatDate(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0)),
+  });
+
+  const shiftMonthRange = (delta: number) => {
+    setDateRange((prev) => {
+      const [y, m] = prev.start.split('-').map(Number);
+      const anchor = Number.isFinite(y) && Number.isFinite(m) ? new Date(y, (m - 1) + delta, 1) : new Date();
+      return getMonthBounds(anchor);
+    });
+  };
+
   return (
     <div className="analysis-view space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-12">
       <div className="custom-card p-6 rounded-[2rem] flex flex-col sm:flex-row gap-4 items-center justify-between">
         <h3 className="font-black text-xs uppercase tracking-widest text-[#D08C70]">分析區間</h3>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => shiftMonthRange(-1)}
+            className="h-10 w-10 rounded-xl text-[#6B6661] hover:text-[#1A1A1A] transition-all"
+            title="上一個月"
+          >
+            <LucideIcons.ChevronLeft size={16} className="mx-auto" />
+          </button>
           <input type="date" value={dateRange.start} onChange={(e) => { const newStart = e.target.value; setDateRange((prev) => ({ start: newStart, end: prev.end < newStart ? newStart : prev.end })); }} className="px-2 py-2 rounded-xl border border-[#E6DED6] text-xs font-bold outline-none bg-[#FAF7F2]" />
           <span className="text-[#B7ADA4] font-bold">~</span>
           <input type="date" value={dateRange.end} onChange={(e) => { const newEnd = e.target.value; setDateRange((prev) => ({ start: prev.start > newEnd ? newEnd : prev.start, end: newEnd })); }} className="px-2 py-2 rounded-xl border border-[#E6DED6] text-xs font-bold outline-none bg-[#FAF7F2]" />
+          <button
+            onClick={() => shiftMonthRange(1)}
+            className="h-10 w-10 rounded-xl text-[#6B6661] hover:text-[#1A1A1A] transition-all"
+            title="下一個月"
+          >
+            <LucideIcons.ChevronRight size={16} className="mx-auto" />
+          </button>
         </div>
       </div>
 

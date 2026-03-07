@@ -1,8 +1,7 @@
-﻿import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Calendar, Sparkles, X } from 'lucide-react';
+﻿import React, { useMemo, useState } from 'react';
+import { ChevronDown, Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { Account, BudgetItem, Category, DisplayRange, SpendingScope, Transaction } from '../types';
 import { SUPPORTED_CURRENCIES } from '../types';
-import { getFinancialAdvice } from '../services/geminiService';
 
 interface DashboardProps {
   transactions: Transaction[];
@@ -31,12 +30,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   customEnd,
   setCustomEnd,
 }) => {
-  const [advice, setAdvice] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showDateMenu, setShowDateMenu] = useState(false);
-  const [showAdviceModal, setShowAdviceModal] = useState(false);
-  const adviceCacheRef = useRef<{ key: string; text: string } | null>(null);
-  const adviceRunCounterRef = useRef(0);
 
   const scopeMap = useMemo(() => {
     const m: Record<string, string> = { all: '全部用途', scope_personal: '個人' };
@@ -69,6 +63,37 @@ const Dashboard: React.FC<DashboardProps> = ({
 
     return { income, expense, net: income - expense, symbol, code: dominant };
   }, [transactions]);
+
+  const formatDate = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+  const parseYearMonth = (value: string): { year: number; month: number } | null => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 0 || month > 11) return null;
+    return { year, month };
+  };
+
+  const resolveActiveMonth = () => {
+    if (displayRange === 'custom') {
+      const parsed = parseYearMonth(customStart);
+      if (parsed) return parsed;
+    }
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  };
+
+  const shiftNaturalMonth = (delta: number) => {
+    const base = resolveActiveMonth();
+    const firstDay = new Date(base.year, base.month + delta, 1);
+    const lastDay = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0);
+    setCustomStart(formatDate(firstDay));
+    setCustomEnd(formatDate(lastDay));
+    setDisplayRange('custom');
+    setShowDateMenu(false);
+  };
 
   const getPeriodRange = (period: BudgetItem['period']) => {
     const now = new Date();
@@ -137,71 +162,42 @@ const Dashboard: React.FC<DashboardProps> = ({
     });
   }, [allTransactions, budgets, scopeMap]);
 
-  const getCurrentAdvice = useCallback(async () => {
-    const expenseTransactions = transactions.filter((tx) => tx.type === 'expense');
-    const expenseCurrencyCount = expenseTransactions.reduce((acc, tx) => {
-      acc[tx.currencyCode] = (acc[tx.currencyCode] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-    const currencyEntries = Object.entries(expenseCurrencyCount) as Array<[string, number]>;
-    const dominantExpenseCode = currencyEntries.sort((a, b) => b[1] - a[1])[0]?.[0] || periodStats.code;
-
-    const dominantBudget = budgetInfo
-      .filter((b) => b.currencyCode === dominantExpenseCode)
-      .reduce((sum, b) => sum + b.amount, 0);
-
-    const budgetContexts = budgetInfo.map((b) => ({
-      name: b.name,
-      currencyCode: b.currencyCode,
-      amount: b.amount,
-      expense: b.expense,
-      progress: b.progress,
-      isOver: b.isOver,
-      scopeNames: b.scopeSummary,
-      scopeIds: b.scopeIds,
-      period: b.period,
-    }));
-
-    const cacheKey = JSON.stringify({
-      tx: expenseTransactions.map((tx) => [tx.id, tx.amount, tx.category, tx.scopeId || 'scope_personal', tx.currencyCode]),
-      budgets: budgetContexts.map((b) => [b.name, b.currencyCode, b.amount, Math.round(b.expense), Math.round(b.progress), b.scopeIds.join(','), b.period]),
-      dominantBudget,
-    });
-    adviceRunCounterRef.current += 1;
-    const requestId = `${Date.now()}_${adviceRunCounterRef.current}`;
-    const previousAdvice = advice || adviceCacheRef.current?.text || undefined;
-
-    setIsAnalyzing(true);
-    try {
-      const result = await getFinancialAdvice(expenseTransactions, dominantBudget, budgetContexts, {
-        previousAdvice,
-        requestId,
-      });
-      adviceCacheRef.current = { key: cacheKey, text: result };
-      setAdvice(result);
-    } catch {
-      setAdvice('目前無法分析，請稍後再試。');
-    } finally {
-      setIsAnalyzing(false);
-    }
-  }, [advice, budgetInfo, periodStats.code, transactions]);
-
-  const handleGetAdvice = async () => {
-    await getCurrentAdvice();
-  };
-
   const getRangeLabel = () => {
+    const monthLabel = (year: number, month: number) => `${year}/${String(month + 1).padStart(2, '0')}`;
+    const parseYmd = (value: string) => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+      if (!m) return null;
+      const year = Number(m[1]);
+      const month = Number(m[2]) - 1;
+      const day = Number(m[3]);
+      if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+      return { year, month, day };
+    };
+    const isNaturalMonthRange = (start: string, end: string) => {
+      const s = parseYmd(start);
+      const e = parseYmd(end);
+      if (!s || !e) return null;
+      if (s.year !== e.year || s.month !== e.month || s.day !== 1) return null;
+      const lastDay = new Date(s.year, s.month + 1, 0).getDate();
+      if (e.day !== lastDay) return null;
+      return { year: s.year, month: s.month };
+    };
+
     switch (displayRange) {
       case 'all':
         return '全部';
       case 'week':
         return '近 7 天';
-      case 'month':
-        return '本月';
-      case 'custom':
-        return '自訂區間';
+      case 'month': {
+        const now = new Date();
+        return monthLabel(now.getFullYear(), now.getMonth());
+      }
+      case 'custom': {
+        const naturalMonth = isNaturalMonthRange(customStart, customEnd);
+        return naturalMonth ? monthLabel(naturalMonth.year, naturalMonth.month) : '自訂區間';
+      }
       default:
-        return '本月';
+        return '近 7 天';
     }
   };
 
@@ -220,31 +216,49 @@ const Dashboard: React.FC<DashboardProps> = ({
               <p className="text-xs font-bold text-[#6B6661]">{periodStats.code}</p>
             </div>
 
-            <div className="relative">
-              <button onClick={() => setShowDateMenu(!showDateMenu)} className="flex items-center gap-2 px-3 py-1.5 bg-white/10 rounded-xl border border-white/10 text-xs font-black text-white hover:bg-white/20 transition-all backdrop-blur-sm">
-                {getRangeLabel()}
-                <ChevronDown size={14} className={`text-white/50 transition-transform ${showDateMenu ? 'rotate-180' : ''}`} />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => shiftNaturalMonth(-1)}
+                className="h-8 w-8 rounded-xl text-white/80 hover:text-white transition-all"
+                title="上一個月"
+              >
+                <ChevronLeft size={14} className="mx-auto" />
               </button>
 
-              {showDateMenu && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setShowDateMenu(false)} />
-                  <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-xl border border-[#E6DED6] p-2 z-20 animate-in zoom-in-95 origin-top-right text-[#1A1A1A]">
-                    {(['month', 'week', 'all', 'custom'] as DisplayRange[]).map((r) => (
-                      <button key={r} onClick={() => { setDisplayRange(r); if (r !== 'custom') setShowDateMenu(false); }} className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-black transition-all ${displayRange === r ? 'bg-[#1A1A1A] text-white' : 'text-[#6B6661] hover:bg-[#FAF7F2]'}`}>
-                        {r === 'all' ? '全部' : r === 'week' ? '近 7 天' : r === 'month' ? '本月' : '自訂區間'}
-                      </button>
-                    ))}
+              <div className="relative">
+                <button onClick={() => setShowDateMenu(!showDateMenu)} className="flex items-center gap-2 px-3 py-1.5 bg-white/10 rounded-xl border border-white/10 text-xs font-black text-white hover:bg-white/20 transition-all backdrop-blur-sm">
+                  {getRangeLabel()}
+                  <ChevronDown size={14} className={`text-white/50 transition-transform ${showDateMenu ? 'rotate-180' : ''}`} />
+                </button>
 
-                    {displayRange === 'custom' && (
-                      <div className="mt-2 pt-2 border-t border-[#E6DED6] space-y-2 p-1">
-                        <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="w-full text-[10px] p-2 bg-[#FAF7F2] rounded-lg border border-[#E6DED6] font-bold" />
-                        <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="w-full text-[10px] p-2 bg-[#FAF7F2] rounded-lg border border-[#E6DED6] font-bold" />
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
+                {showDateMenu && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setShowDateMenu(false)} />
+                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-xl border border-[#E6DED6] p-2 z-20 animate-in zoom-in-95 origin-top-right text-[#1A1A1A]">
+                      {(['month', 'week', 'all', 'custom'] as DisplayRange[]).map((r) => (
+                        <button key={r} onClick={() => { setDisplayRange(r); if (r !== 'custom') setShowDateMenu(false); }} className={`w-full text-left px-3 py-2.5 rounded-xl text-xs font-black transition-all ${displayRange === r ? 'bg-[#1A1A1A] text-white' : 'text-[#6B6661] hover:bg-[#FAF7F2]'}`}>
+                          {r === 'all' ? '全部' : r === 'week' ? '近 7 天' : r === 'month' ? '本月' : '自訂區間'}
+                        </button>
+                      ))}
+
+                      {displayRange === 'custom' && (
+                        <div className="mt-2 pt-2 border-t border-[#E6DED6] space-y-2 p-1">
+                          <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="w-full text-[10px] p-2 bg-[#FAF7F2] rounded-lg border border-[#E6DED6] font-bold" />
+                          <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="w-full text-[10px] p-2 bg-[#FAF7F2] rounded-lg border border-[#E6DED6] font-bold" />
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <button
+                onClick={() => shiftNaturalMonth(1)}
+                className="h-8 w-8 rounded-xl text-white/80 hover:text-white transition-all"
+                title="下一個月"
+              >
+                <ChevronRight size={14} className="mx-auto" />
+              </button>
             </div>
           </div>
 
@@ -300,39 +314,12 @@ const Dashboard: React.FC<DashboardProps> = ({
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setShowAdviceModal(true)}
-        className="fixed right-5 bottom-[calc(3.4rem+env(safe-area-inset-bottom))] z-[45] h-12 w-12 rounded-full bg-[#1A1A1A] text-white shadow-2xl flex items-center justify-center"
-        title="AI 理財分析"
-      >
-        <Sparkles size={18} />
-      </button>
-
-      {showAdviceModal && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 pt-safe pb-safe">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowAdviceModal(false)} />
-          <div className="relative z-10 w-full max-w-md rounded-3xl border border-[#E6DED6] bg-white shadow-2xl max-h-[80vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-[#E6DED6] px-5 py-4">
-              <h3 className="font-extrabold text-sm text-[#1A1A1A] flex items-center gap-2"><Sparkles size={16} className="text-[#D08C70]" />AI 理財建議</h3>
-              <button onClick={() => setShowAdviceModal(false)} className="text-[#B7ADA4] hover:text-[#1A1A1A]"><X size={18} /></button>
-            </div>
-            <div className="p-5 space-y-4">
-              <p className="text-[13px] font-bold text-[#1A1A1A] whitespace-pre-line min-h-[78px]">
-                {advice || '點下方按鈕，取得 AI 分析後的理財建議。'}
-              </p>
-              <button onClick={handleGetAdvice} disabled={isAnalyzing} className="w-full h-11 rounded-xl bg-[#1A1A1A] text-white text-xs font-black">
-                {isAnalyzing ? '分析中...' : '重新分析'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
 
 export default Dashboard;
+
 
 
 

@@ -451,9 +451,20 @@ const normalizeLearnedDesc = (text: string) =>
     setIncomeRules((prev) => prev.filter((r) => r.bucketId !== bucketId));
   };
 
-  const handleUpdateBucketTarget = (bucketId: string, targetAmount: number) => {
+  const handleUpdateBucket = (
+    bucketId: string,
+    patch: Partial<Pick<SavingBucket, 'name' | 'targetAmount' | 'color'>>
+  ) => {
     setSavingBuckets((prev) =>
-      prev.map((bucket) => (bucket.id === bucketId ? { ...bucket, targetAmount: Math.max(0, targetAmount) } : bucket))
+      prev.map((bucket) => {
+        if (bucket.id !== bucketId) return bucket;
+        return {
+          ...bucket,
+          ...patch,
+          targetAmount:
+            patch.targetAmount === undefined ? bucket.targetAmount : Math.max(0, patch.targetAmount),
+        };
+      })
     );
   };
 
@@ -461,11 +472,27 @@ const normalizeLearnedDesc = (text: string) =>
     setBucketAllocations((prev) => prev.filter((a) => a.id !== allocationId));
   };
 
-  const handleUpsertIncomeRule = (bucketId: string, sourceAccountId: string, type: 'percent' | 'fixed', value: number) => {
+  const handleUpsertIncomeRule = (
+    bucketId: string,
+    sourceAccountId: string,
+    type: 'percent' | 'fixed',
+    value: number,
+    ruleId?: string
+  ) => {
     if (!canUseAutoRules) return;
     if (!accounts.some((acc) => acc.id === sourceAccountId)) return;
     const normalizedValue = type === 'percent' ? Math.min(100, Math.max(0, value)) : Math.max(0, value);
     setIncomeRules((prev) => {
+      if (ruleId) {
+        const hasRule = prev.some((rule) => rule.id === ruleId);
+        if (hasRule) {
+          return prev.map((rule) =>
+            rule.id === ruleId
+              ? { ...rule, bucketId, sourceAccountId, type, value: normalizedValue, isActive: true }
+              : rule
+          );
+        }
+      }
       const existing = prev.find(
         (rule) => rule.bucketId === bucketId && rule.sourceAccountId === sourceAccountId && rule.type === type
       );
@@ -696,11 +723,12 @@ const normalizeLearnedDesc = (text: string) =>
             bucketTotals={bucketTotals}
             incomeRules={incomeRules}
             onAddBucket={handleAddBucket}
+            onUpdateBucket={handleUpdateBucket}
             onDeleteBucket={handleDeleteBucket}
-            onUpdateBucketTarget={handleUpdateBucketTarget}
             onDeleteAllocation={handleDeleteAllocation}
             onUpsertIncomeRule={handleUpsertIncomeRule}
             onDeleteIncomeRule={handleDeleteIncomeRule}
+            onAddManualAllocation={addManualBucketAllocation}
           />
         )}
         {activeTab === 'charts' && <Analysis transactions={transactions} categories={categories} scopes={scopes} accounts={accounts} />}

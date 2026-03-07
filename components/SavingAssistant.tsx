@@ -18,7 +18,7 @@ interface SavingAssistantProps {
   onUpdateBucket: (bucketId: string, patch: Partial<Pick<SavingBucket, 'name' | 'targetAmount' | 'color'>>) => void;
   onDeleteBucket: (bucketId: string) => void;
   onDeleteAllocation: (allocationId: string) => void;
-  onUpsertIncomeRule: (bucketId: string, sourceAccountId: string, type: 'percent' | 'fixed', value: number) => void;
+  onUpsertIncomeRule: (bucketId: string, sourceAccountId: string, type: 'percent' | 'fixed', value: number, ruleId?: string) => void;
   onDeleteIncomeRule: (ruleId: string) => void;
   onAddManualAllocation: (bucketId: string, accountId: string, amount: number) => void;
 }
@@ -53,6 +53,7 @@ const SavingAssistant: React.FC<SavingAssistantProps> = ({
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [valueType, setValueType] = useState<'fixed' | 'percent'>('fixed');
   const [valueInput, setValueInput] = useState('');
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [deleteConfirmKey, setDeleteConfirmKey] = useState<string | null>(null);
 
   const accountMap = useMemo(() => Object.fromEntries(accounts.map((a) => [a.id, a])), [accounts]);
@@ -84,6 +85,7 @@ const SavingAssistant: React.FC<SavingAssistantProps> = ({
     setSelectedAccountId(firstRule?.sourceAccountId || firstAccount);
     setValueType(firstRule?.type || 'fixed');
     setValueInput('');
+    setEditingRuleId(null);
 
     if (type === 'edit') {
       const bucket = buckets.find((b) => b.id === bucketId);
@@ -97,6 +99,16 @@ const SavingAssistant: React.FC<SavingAssistantProps> = ({
     setModalType(null);
     setActiveBucketId('');
     setValueInput('');
+    setEditingRuleId(null);
+  };
+
+  const openRuleEditor = (rule: IncomeAllocationRule) => {
+    setModalType('rule');
+    setActiveBucketId(rule.bucketId);
+    setSelectedAccountId(rule.sourceAccountId || accounts[0]?.id || '');
+    setValueType(rule.type);
+    setValueInput(String(rule.value));
+    setEditingRuleId(rule.id);
   };
 
   const handleDeleteConfirm = (key: string, action: () => void) => {
@@ -139,8 +151,9 @@ const SavingAssistant: React.FC<SavingAssistantProps> = ({
     const parsedInput = Number(valueInput.replace(/,/g, ''));
     const parsed = valueType === 'percent' ? Math.max(0, Math.min(100, parsedInput)) : parsedInput;
     if (!Number.isFinite(parsed) || parsed <= 0) return;
-    onUpsertIncomeRule(activeBucketId, selectedAccountId, valueType, parsed);
+    onUpsertIncomeRule(activeBucketId, selectedAccountId, valueType, parsed, editingRuleId || undefined);
     setValueInput('');
+    setEditingRuleId(null);
   };
 
   const handleManualAllocate = () => {
@@ -193,6 +206,9 @@ const SavingAssistant: React.FC<SavingAssistantProps> = ({
                   {rules.map((rule) => (
                     <span key={rule.id} className="inline-flex items-center gap-1 rounded-full border border-[#D08C70]/30 bg-[#F7EEE8] px-2 py-1 text-[10px] font-black text-[#D08C70]">
                       <Sparkles size={10} />{accountMap[rule.sourceAccountId]?.name || '帳戶'}：{rule.type === 'percent' ? `${rule.value}%` : `$${rule.value.toLocaleString()}`}
+                      <button onClick={() => openRuleEditor(rule)} className="ml-1 rounded px-1 py-0.5 text-[#B7ADA4] hover:text-[#1A1A1A]" title="編輯規則">
+                        <Pencil size={10} />
+                      </button>
                       <button onClick={() => handleDeleteConfirm(`rule_${rule.id}`, () => onDeleteIncomeRule(rule.id))} className={`ml-1 rounded px-1 py-0.5 text-[9px] font-black ${deleteConfirmKey === `rule_${rule.id}` ? 'bg-red-500 text-white' : 'text-[#B7ADA4] hover:text-red-500'}`}>
                         {deleteConfirmKey === `rule_${rule.id}` ? '確認' : <Trash2 size={10} />}
                       </button>
@@ -237,7 +253,7 @@ const SavingAssistant: React.FC<SavingAssistantProps> = ({
               <h4 className="text-sm font-black text-[#1A1A1A]">
                 {modalType === 'add' && '新增目標池'}
                 {modalType === 'edit' && `編輯目標 · ${activeBucket?.name || ''}`}
-                {modalType === 'rule' && `規則設定 · ${activeBucket?.name || ''}`}
+                {modalType === 'rule' && `${editingRuleId ? '編輯規則' : '規則設定'} · ${activeBucket?.name || ''}`}
                 {modalType === 'manual' && `手動分配 · ${activeBucket?.name || ''}`}
               </h4>
               <button onClick={closeModal} className="text-[#B7ADA4] hover:text-[#1A1A1A]"><X size={18} /></button>
@@ -292,7 +308,7 @@ const SavingAssistant: React.FC<SavingAssistantProps> = ({
                   </div>
 
                   <button onClick={() => { if (modalType === 'rule') handleSaveRule(); else handleManualAllocate(); }} className="w-full h-11 rounded-xl bg-[#1A1A1A] text-white text-xs font-black">
-                    {modalType === 'rule' ? '儲存規則' : '立即分配'}
+                    {modalType === 'rule' ? (editingRuleId ? '儲存變更' : '儲存規則') : '立即分配'}
                   </button>
                 </>
               )}
